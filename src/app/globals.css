@@ -1,0 +1,140 @@
+@import "tailwindcss";
+
+/* ============================================================
+   HARIS Tasarım Sistemi — Tailwind v4 @theme
+   ============================================================ */
+@theme {
+  --color-bg-deep: #07111f;
+  --color-bg-1: #0a1628;
+  --color-bg-2: #0f1d33;
+  --color-bg-3: #152544;
+  --color-line: #1e2f50;
+  --color-line-2: #28406b;
+  --color-gold: #c9a961;
+  --color-gold-bright: #e6c884;
+  --color-gold-soft: #8a7541;
+  --color-text: #e8eef7;
+  --color-text-2: #a9b6cc;
+  --color-text-3: #6b7a94;
+  --color-danger: #e26b6b;
+  --color-warn: #e6b85a;
+  --color-ok: #5cc88f;
+  --color-info: #6aa3e6;
+
+  --font-serif: "Playfair Display", Georgia, "Times New Roman", serif;
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+
+  --shadow-lg: 0 30px 80px -20px rgba(0, 0, 0, 0.7);
+  --shadow-md: 0 10px 30px -10px rgba(0, 0, 0, 0.5);
+
+  --radius-base: 12px;
+  --radius-lg: 18px;
+}
+
+/* ============================================================
+   Base Styles
+   ============================================================ */
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background:
+    radial-gradient(1200px 800px at 80% -10%, rgba(201, 169, 97, 0.07), transparent 60%),
+    radial-gradient(900px 700px at -10% 100%, rgba(106, 163, 230, 0.05), transparent 60%),
+    var(--color-bg-deep);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.55;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+h1, h2, h3, h4, .serif {
+  font-family: var(--font-serif);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+::selection {
+  background: var(--color-gold);
+  color: var(--color-bg-deep);
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: var(--color-bg-1);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-line-2);
+  border-radius: 6px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-gold-soft);
+}
+
+/* ============================================================
+   Utility Components (Tailwind v4 @utility)
+   ============================================================ */
+@utility btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 22px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  transition: all 0.2s ease;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+
+@utility btn-primary {
+  background: linear-gradient(135deg, var(--color-gold) 0%, var(--color-gold-soft) 100%);
+  color: var(--color-bg-deep);
+  font-weight: 600;
+  box-shadow: 0 4px 18px rgba(201, 169, 97, 0.25);
+}
+
+@utility btn-ghost {
+  background: transparent;
+  color: var(--color-text);
+  border: 1px solid var(--color-line-2);
+}
+
+@utility card-base {
+  background: var(--color-bg-1);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-base);
+  padding: 22px;
+}
+
+/* Animasyonlar */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+@keyframes slide-in-right {
+  from { transform: translateX(100%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-pulse-dot { animation: pulse-dot 1.5s infinite; }
+.animate-slide-in { animation: slide-in-right 0.3s ease; }
+.animate-fade-in { animation: fade-in 0.3s ease; }

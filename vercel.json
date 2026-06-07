@@ -1,0 +1,48 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "nextjs",
+  "buildCommand": "next build",
+  "installCommand": "npm install --legacy-peer-deps",
+  "regions": ["fra1"],
+  "crons": [
+    {
+      "path": "/api/scraping/cron",
+      "schedule": "0 3 * * *"
+    },
+    {
+      "path": "/api/cron/process-deletions",
+      "schedule": "0 4 * * *"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "X-Frame-Options", "value": "SAMEORIGIN" },
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" },
+        { "key": "Permissions-Policy", "value": "camera=(), microphone=(), geolocation=()" },
+        { "key": "Strict-Transport-Security", "value": "max-age=63072000; includeSubDomains; preload" }
+      ]
+    },
+    {
+      "source": "/api/billing/webhook",
+      "headers": [{ "key": "Cache-Control", "value": "no-store" }]
+    },
+    {
+      "source": "/admin/(.*)",
+      "headers": [
+        { "key": "X-Robots-Tag", "value": "noindex, nofollow" },
+        { "key": "Cache-Control", "value": "no-store, max-age=0" }
+      ]
+    }
+  ],
+  "functions": {
+    "src/app/api/scraping/cron/route.ts": { "maxDuration": 300 },
+    "src/app/api/scraping/run/route.ts": { "maxDuration": 300 },
+    "src/app/api/agents/run/route.ts": { "maxDuration": 120 },
+    "src/app/api/documents/upload/route.ts": { "maxDuration": 60 },
+    "src/app/api/billing/webhook/route.ts": { "maxDuration": 30 },
+    "src/app/api/cron/process-deletions/route.ts": { "maxDuration": 300 }
+  }
+}

@@ -24,6 +24,7 @@ export async function POST(req: NextRequest) {
   try {
     const provider = getProvider();
     const event = await provider.verifyAndParseWebhook(rawBody, signature);
+    console.log("Received event:", event?.type, event);
 
     if (!event) {
       return NextResponse.json({ received: true, ignored: true });

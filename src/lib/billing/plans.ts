@@ -107,6 +107,8 @@ export const PLANS: Record<PlanId, Plan> = {
     priceYearlyTRY: 14990, // ≈ 2 ay bedava
     priceMonthlyUSD: 49,
     priceYearlyUSD: 490,
+    stripeMonthlyPriceId: "price_1Tfbj2E7v15ytfknWM0nv8fr",
+    stripeYearlyPriceId: "price_1TfbmAE7v15ytfkn4NixXQIJ",
     badge: "popular",
     limits: {
       maxCases: 25,
@@ -142,6 +144,8 @@ export const PLANS: Record<PlanId, Plan> = {
     priceYearlyTRY: 39990,
     priceMonthlyUSD: 129,
     priceYearlyUSD: 1290,
+    stripeMonthlyPriceId: "price_1TfbnjE7v15ytfknWkzfDP0R",
+    stripeYearlyPriceId: "price_1TfbqZE7v15ytfknwRKm26wY",
     badge: "recommended",
     limits: {
       maxCases: 200,
@@ -209,13 +213,20 @@ export const PLANS: Record<PlanId, Plan> = {
   },
 };
 
-starter: {
-  stripeMonthlyPriceId: "price_1Tfbj2E7v15ytfknWM0nv8fr",
-  stripeYearlyPriceId: "price_1TfbmAE7v15ytfkn4NixXQIJ",
-  // ...
-},
-pro: {
-  stripeMonthlyPriceId: "price_1TfbnjE7v15ytfknWkzfDP0R",
-  stripeYearlyPriceId: "price_1TfbqZE7v15ytfknwRKm26wY",
-  // ...
-},
+export function getPlan(id: PlanId | string): Plan {
+  return PLANS[id as PlanId] || PLANS.free;
+}
+
+export function getPlanList(): Plan[] {
+  return [PLANS.free, PLANS.starter, PLANS.pro, PLANS.enterprise];
+}
+
+export function formatPriceTRY(amount: number): string {
+  if (amount === 0) return "Ücretsiz";
+  return `₺${amount.toLocaleString("tr-TR")}`;
+}
+
+export function formatPriceUSD(amount: number): string {
+  if (amount === 0) return "Free";
+  return `$${amount.toLocaleString("en-US")}`;
+}

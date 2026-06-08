@@ -1,247 +1,245 @@
-```ts
 /**
- * HARIS Plan Tiers
- *
- * Free → Starter → Pro → Enterprise
- *
- * Her plan için:
- * - Aylık AI işlem kotası
- * - Dava limiti
- * - Belge upload limiti
- * - Yargıtay scraping limiti
- * - Müvekkil portalı / beyaz etiket / API erişimi
- */
 
-export type PlanId = "free" | "starter" | "pro" | "enterprise";
+* HARIS Plan Tiers
+*
+* Free → Starter → Pro → Enterprise
+  */
+
+export type PlanId =
+| "free"
+| "starter"
+| "pro"
+| "enterprise";
 
 export interface PlanLimits {
-  maxCases: number | null;
-  monthlyAiCalls: number;
-  maxFileSizeMB: number;
-  maxStorageGB: number;
-  monthlyScrapingJobs: number;
-  clientPortal: boolean;
-  whiteLabel: boolean;
-  adversarialMode: boolean;
-  premiumModels: boolean;
-  apiAccess: boolean;
-  maxTeamMembers: number;
-  prioritySupport: boolean;
+maxCases: number | null;
+monthlyAiCalls: number;
+maxFileSizeMB: number;
+maxStorageGB: number;
+monthlyScrapingJobs: number;
+clientPortal: boolean;
+whiteLabel: boolean;
+adversarialMode: boolean;
+premiumModels: boolean;
+apiAccess: boolean;
+maxTeamMembers: number;
+prioritySupport: boolean;
 }
 
 export interface Plan {
-  id: PlanId;
-  name: string;
-  displayName: string;
-  description: string;
+id: PlanId;
+name: string;
+displayName: string;
+description: string;
 
-  priceMonthlyTRY: number;
-  priceYearlyTRY: number;
+priceMonthlyTRY: number;
+priceYearlyTRY: number;
 
-  priceMonthlyUSD: number;
-  priceYearlyUSD: number;
+priceMonthlyUSD: number;
+priceYearlyUSD: number;
 
-  stripeMonthlyPriceId?: string;
-  stripeYearlyPriceId?: string;
+stripeMonthlyPriceId?: string;
+stripeYearlyPriceId?: string;
 
-  iyzicoMonthlyPlanRef?: string;
-  iyzicoYearlyPlanRef?: string;
+badge?: "popular" | "recommended" | "enterprise";
 
-  badge?: "popular" | "recommended" | "enterprise";
+limits: PlanLimits;
 
-  limits: PlanLimits;
-
-  features: string[];
+features: string[];
 }
 
 export const PLANS: Record<PlanId, Plan> = {
 
-  free: {
-    id: "free",
-    name: "Ücretsiz",
-    displayName: "Free",
-    description: "Tanışma + küçük testler için",
+free: {
+id: "free",
+name: "Ücretsiz",
+displayName: "Free",
+description: "Tanışma planı",
 
-    priceMonthlyTRY: 0,
-    priceYearlyTRY: 0,
+```
+priceMonthlyTRY: 0,
+priceYearlyTRY: 0,
 
-    priceMonthlyUSD: 0,
-    priceYearlyUSD: 0,
+priceMonthlyUSD: 0,
+priceYearlyUSD: 0,
 
-    limits: {
-      maxCases: 3,
-      monthlyAiCalls: 30,
-      maxFileSizeMB: 10,
-      maxStorageGB: 1,
-      monthlyScrapingJobs: 5,
-      clientPortal: false,
-      whiteLabel: false,
-      adversarialMode: false,
-      premiumModels: false,
-      apiAccess: false,
-      maxTeamMembers: 1,
-      prioritySupport: false,
-    },
+limits: {
+  maxCases: 3,
+  monthlyAiCalls: 30,
+  maxFileSizeMB: 10,
+  maxStorageGB: 1,
+  monthlyScrapingJobs: 5,
+  clientPortal:false,
+  whiteLabel:false,
+  adversarialMode:false,
+  premiumModels:false,
+  apiAccess:false,
+  maxTeamMembers:1,
+  prioritySupport:false,
+},
 
-    features: [
-      "3 aktif dava",
-      "30 AI işlem / ay",
-      "10 MB dosya boyutu",
-      "1 GB saklama",
-    ],
-  },
+features:["Free access"],
+```
 
-  starter: {
-    id: "starter",
-    name: "Başlangıç",
-    displayName: "Starter",
-    description: "Solo avukatlar için",
+},
 
-    priceMonthlyTRY: 1499,
-    priceYearlyTRY: 14990,
+starter: {
+id:"starter",
+name:"Başlangıç",
+displayName:"Starter",
+description:"Solo avukatlar için",
 
-    priceMonthlyUSD: 49,
-    priceYearlyUSD: 490,
+```
+priceMonthlyTRY:1499,
+priceYearlyTRY:14990,
 
-    stripeMonthlyPriceId:
-      "price_1Tfbj2E7v15ytfknWM0nv8fr",
+priceMonthlyUSD:49,
+priceYearlyUSD:490,
 
-    stripeYearlyPriceId:
-      "price_1TfbmAE7v15ytfkn4NixXQIJ",
+stripeMonthlyPriceId:
+  "price_1Tfbj2E7v15ytfknWM0nv8fr",
 
-    badge: "popular",
+stripeYearlyPriceId:
+  "price_1TfbmAE7v15ytfkn4NixXQIJ",
 
-    limits: {
-      maxCases: 25,
-      monthlyAiCalls: 500,
-      maxFileSizeMB: 50,
-      maxStorageGB: 10,
-      monthlyScrapingJobs: 50,
-      clientPortal: false,
-      whiteLabel: false,
-      adversarialMode: true,
-      premiumModels: false,
-      apiAccess: false,
-      maxTeamMembers: 1,
-      prioritySupport: false,
-    },
+badge:"popular",
 
-    features: [
-      "25 aktif dava",
-      "500 AI işlem / ay",
-      "50 MB dosya",
-      "10 GB saklama",
-    ],
-  },
+limits:{
+  maxCases:25,
+  monthlyAiCalls:500,
+  maxFileSizeMB:50,
+  maxStorageGB:10,
+  monthlyScrapingJobs:50,
+  clientPortal:false,
+  whiteLabel:false,
+  adversarialMode:true,
+  premiumModels:false,
+  apiAccess:false,
+  maxTeamMembers:1,
+  prioritySupport:false,
+},
 
-  pro: {
-    id: "pro",
-    name: "Profesyonel",
-    displayName: "Pro",
-    description: "Hukuk büroları için",
+features:["Starter"],
+```
 
-    priceMonthlyTRY: 3999,
-    priceYearlyTRY: 39990,
+},
 
-    priceMonthlyUSD: 129,
-    priceYearlyUSD: 1290,
+pro: {
+id:"pro",
+name:"Profesyonel",
+displayName:"Pro",
+description:"Hukuk büroları için",
 
-    stripeMonthlyPriceId:
-      "price_1TfbnjE7v15ytfknWkzfDP0R",
+```
+priceMonthlyTRY:3999,
+priceYearlyTRY:39990,
 
-    stripeYearlyPriceId:
-      "price_1TfbqZE7v15ytfknwRKm26wY",
+priceMonthlyUSD:129,
+priceYearlyUSD:1290,
 
-    badge: "recommended",
+stripeMonthlyPriceId:
+  "price_1TfbnjE7v15ytfknWkzfDP0R",
 
-    limits: {
-      maxCases: 200,
-      monthlyAiCalls: 3000,
-      maxFileSizeMB: 200,
-      maxStorageGB: 100,
-      monthlyScrapingJobs: 500,
-      clientPortal: true,
-      whiteLabel: true,
-      adversarialMode: true,
-      premiumModels: true,
-      apiAccess: false,
-      maxTeamMembers: 10,
-      prioritySupport: true,
-    },
+stripeYearlyPriceId:
+  "price_1TfbqZE7v15ytfknwRKm26wY",
 
-    features: [
-      "200 aktif dava",
-      "3000 AI işlem",
-      "Premium AI",
-      "100 GB saklama",
-    ],
-  },
+badge:"recommended",
 
-  enterprise: {
-    id: "enterprise",
-    name: "Kurumsal",
-    displayName: "Enterprise",
-    description: "Büyük hukuk ofisleri için",
+limits:{
+  maxCases:200,
+  monthlyAiCalls:3000,
+  maxFileSizeMB:200,
+  maxStorageGB:100,
+  monthlyScrapingJobs:500,
+  clientPortal:true,
+  whiteLabel:true,
+  adversarialMode:true,
+  premiumModels:true,
+  apiAccess:false,
+  maxTeamMembers:10,
+  prioritySupport:true,
+},
 
-    priceMonthlyTRY: 0,
-    priceYearlyTRY: 0,
+features:["Pro"],
+```
 
-    priceMonthlyUSD: 0,
-    priceYearlyUSD: 0,
+},
 
-    badge: "enterprise",
+enterprise: {
+id:"enterprise",
+name:"Kurumsal",
+displayName:"Enterprise",
+description:"Custom",
 
-    limits: {
-      maxCases: null,
-      monthlyAiCalls: 999999,
-      maxFileSizeMB: 1000,
-      maxStorageGB: 1000,
-      monthlyScrapingJobs: 99999,
-      clientPortal: true,
-      whiteLabel: true,
-      adversarialMode: true,
-      premiumModels: true,
-      apiAccess: true,
-      maxTeamMembers: 999,
-      prioritySupport: true,
-    },
+```
+priceMonthlyTRY:0,
+priceYearlyTRY:0,
 
-    features: [
-      "Sınırsız dava",
-      "Sınırsız AI",
-      "API erişimi",
-    ],
-  },
+priceMonthlyUSD:0,
+priceYearlyUSD:0,
+
+badge:"enterprise",
+
+limits:{
+  maxCases:null,
+  monthlyAiCalls:999999,
+  maxFileSizeMB:1000,
+  maxStorageGB:1000,
+  monthlyScrapingJobs:99999,
+  clientPortal:true,
+  whiteLabel:true,
+  adversarialMode:true,
+  premiumModels:true,
+  apiAccess:true,
+  maxTeamMembers:999,
+  prioritySupport:true,
+},
+
+features:["Enterprise"],
+```
+
+},
+
 };
 
 export function getPlan(
-  id: PlanId | string
+id: PlanId | string
 ): Plan {
-  return PLANS[id as PlanId] || PLANS.free;
+
+return PLANS[id as PlanId]
+|| PLANS.free;
+
 }
 
 export function getPlanList(): Plan[] {
-  return [
-    PLANS.free,
-    PLANS.starter,
-    PLANS.pro,
-    PLANS.enterprise,
-  ];
+
+return [
+PLANS.free,
+PLANS.starter,
+PLANS.pro,
+PLANS.enterprise,
+];
+
 }
 
 export function formatPriceTRY(
-  amount: number
-): string {
-  if (amount === 0) return "Ücretsiz";
+amount:number
+):string{
 
-  return `₺${amount.toLocaleString("tr-TR")}`;
+if(amount===0)
+return "Ücretsiz";
+
+return `₺${amount.toLocaleString("tr-TR")}`;
+
 }
 
 export function formatPriceUSD(
-  amount: number
-): string {
-  if (amount === 0) return "Free";
+amount:number
+):string{
 
-  return `$${amount.toLocaleString("en-US")}`;
+if(amount===0)
+return "Free";
+
+return `$${amount.toLocaleString("en-US")}`;
+
 }
-```

@@ -13,6 +13,7 @@ export async function updateSession(request: NextRequest) {
   let supabaseResponse = NextResponse.next({ request });
 
   const pathname = request.nextUrl.pathname;
+  // Faz 13.5.5: /v2 Matter Workspace de artık auth zorunlu (matter isolation için)
   const isProtected =
     pathname.startsWith("/dashboard") ||
     pathname.startsWith("/cases") ||
@@ -21,7 +22,8 @@ export async function updateSession(request: NextRequest) {
     pathname.startsWith("/research") ||
     pathname.startsWith("/calendar") ||
     pathname.startsWith("/settings") ||
-    pathname.startsWith("/admin");
+    pathname.startsWith("/admin") ||
+    pathname.startsWith("/v2");
 
   if (isDemoMode) {
     const demoCookie = request.cookies.get("haris-demo-session");

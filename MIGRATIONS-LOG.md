@@ -462,3 +462,249 @@ Tüm HARIS migration'ları **idempotent**'dir:
 ---
 
 *Son güncelleme: **Faz 10 sonu (Admin panel + operasyonel araçlar)***
+
+---
+
+### Faz 11 Sprint 11.1 — Matter Workspace Foundation (✅ Tamam)
+
+#### `supabase/migrations/0007_matter_workspace.sql` (YENİ) 🔴 KRİTİK
+**Vizyon**: Harvey/CoCounsel/Legora benzeri "Matter Workspace" mimarisi. Mevcut /(app) kodu DEĞİŞMEDİ — paralel /v2/ route'unda yeni model.
+
+**6 yeni tablo:**
+1. **`workspaces`** — Her dava = bir Matter. preferences jsonb, orchestration_status, total_cost_usd, current_round (0-3)
+2. **`workspace_documents`** — Vault (drag-drop edilmiş belgeler). category, summary, parties, document_date, extracted_text, status enum (uploading/extracting/classifying/ready/error)
+3. **`agent_runs`** — Her ajanın her TUR'daki çıktısı. model_provider+model_id, content, raw_response (jsonb — "Ham yanıt görüntüle" butonu için), system_prompt, tokens_input/output, cost_usd
+4. **`agent_messages`** — Şef-ajan ve ajan-ajan iç diyaloglar (Karar 9). from_agent, to_agent, message_type (question/answer/directive/critique/synthesis/user_chat/agent_chat)
+5. **`petition_versions`** — Tiptap version history. content_markdown + content_json, quality_report (jsonb), quality_score, citations
+6. **`user_preferences`** — Slider/toggle/checkpoint mode tercihleri. default_petition_length, default_checkpoint_mode, show_internal_dialogs, show_raw_responses, preferred_agents[], disabled_agents[]
+
+**Trigger:**
+- `on_auth_user_created_preferences` — Yeni kullanıcı kayıt olunca otomatik default preferences satırı
+
+**View:**
+- `workspace_summary` (security_invoker=on) — Listing için: document_count + completed_runs + latest_petition_version
+
+**RLS:** Hepsi `auth.uid() = user_id` (workspace_owner_all pattern, 6 tablo).
+
+**Güvenli mi?** ✅ İdempotent (CREATE IF NOT EXISTS + DROP/CREATE POLICY)
+**SHA256:** `b508b8837c19`
+**Boyut:** 13850 B
+
+#### `.env.local` (YENİ — gitignore'da) 🟡 ORTA
+**6 yeni env değişkeni** (model strategy):
+- `HARIS_ORCHESTRATOR_MODEL=anthropic:claude-4-6-opus`
+- `HARIS_ANALYZER_MODEL=anthropic:claude-4-6-sonnet`
+- `HARIS_DRAFTER_MODEL=openai:gpt-5.4`
+- `HARIS_QUICK_MODEL=openai:gpt-5.4-mini`
+- `HARIS_VISION_MODEL=openai:gpt-4o`
+- `HARIS_EMBEDDING_MODEL=openai:text-embedding-3-small`
+
+**Mevcut env değerleri**: Kullanıcının paylaştığı tüm key'ler `.env.local`'e işlendi (Supabase + OneProvider Anthropic + OpenAI + Stripe).
+
+**⚠️ DİKKAT — Vercel'e deploy öncesi**: Yukarıdaki 6 yeni `HARIS_*_MODEL` değişkeni Vercel Environment Variables'a eklenmeli.
+
+#### `package.json` 🟡 ORTA
+**4 yeni dependency:**
+- `@langchain/langgraph@^1.4.2` — 3-tur state machine + checkpointing
+- `@langchain/core@^1.1.49` — base abstractions
+- `@langchain/anthropic@^1.4.1` — Claude Opus 4.6 + Sonnet 4.5
+- `@langchain/openai@^1.4.7` — GPT-5.4 + embeddings
+
+**npm install komutu**: `npm install --legacy-peer-deps` (React 19 RC peer dep çakışması nedeniyle)
+
+#### Yeni kod dosyaları (Sprint 11.1)
+**Lib:**
+- `src/lib/v2/providers/index.ts` — Model registry + getChatModel(role) + isDemoMode()
+- `src/lib/v2/orchestra/agents.ts` — 12 ajan tanımı (sistem promptları, modeller, capabilities)
+- `src/lib/v2/state/workspace-state.ts` — LangGraph Annotation (WorkspaceState typed)
+
+**UI:**
+- `src/app/v2/layout.tsx` — Üst bar + lacivert tema
+- `src/app/v2/page.tsx` — Workspace listesi + yeni Matter CTA
+- `src/app/v2/workspaces/new/page.tsx` — Drag-drop onboarding (en az 1 belge zorunlu)
+- `src/app/v2/workspaces/[id]/page.tsx` + `workspace-client.tsx` — Ana Matter Workspace
+- `src/components/v2/layout/three-panel-layout.tsx` — 3-panel responsive
+- `src/components/v2/vault/vault-panel.tsx` — Belge listesi (kategoriye göre gruplu)
+- `src/components/v2/workflow/workflow-viewer.tsx` — Sticky 3-tur node graph (Karar 3)
+- `src/components/v2/chat/orchestrator-chat.tsx` — @mention + tooltip + örnek modal (Karar 5) + ham yanıt toggle (Karar 8)
+- `src/components/v2/canvas/petition-canvas.tsx` — Dilekçe önizleme iskelet
+
+**Test sonuçları:**
+- TypeScript: ✅ 0 hata
+- Lint: ✅ exit 0 (sadece eski koddaki warnings)
+- Build: ✅ 46 sayfa derliyor (43 eski + 3 yeni v2)
+- Runtime: ✅ /v2, /v2/workspaces/new, /v2/workspaces/demo-1 hepsi HTTP 200
+- Regression: ✅ Tüm eski sayfalar (/login, /dashboard, /pricing, /legal/*, /admin) etkilenmedi
+
+#### Hangi sprint hangi karar?
+- ✅ Sprint 11.1: Karar 2 (3-panel), Karar 3 (sticky workflow), Karar 5 (@mention skeleton), Karar 8 (ham yanıt)
+- ⏳ Sprint 11.2: Karar 1 (en az 1 belge zorunlu — onboarding'de aktif), Tabular Review **ertelendi → Faz 12**
+- ⏳ Sprint 11.3: Karar 4 (hibrit checkpoint mode), Karar 9 (kalite gate görselleştirmesi)
+- ⏳ Sprint 11.5: Dilekçe uzunluk slider + Kalite Gate doygun görsel animasyon
+
+
+---
+
+### Faz 11 Sprint 11.2-11.6 — Matter Workspace TAMAMLANDI (✅ Tamam)
+
+**Live AI testi başarılı:**
+- Claude Opus 4.6 (OneProvider) ✅
+- Claude Sonnet 4.6 ✅
+- GPT-5.4-mini ✅
+- 3-TUR SSE orkestra 30 event ✅
+- Karşı Argüman 967 token gerçek hukuki analiz üretti ✅
+
+#### Yeni dosyalar (15 adet)
+**Lib (4):**
+- `src/lib/v2/workspace/db.ts` — CRUD + demo store fallback (629 satır)
+- `src/lib/v2/workspace/auth.ts` — getCurrentUserId
+- `src/lib/v2/ingest/extract.ts` — PDF/DOCX/TXT/görsel (GPT-4o Vision)
+- `src/lib/v2/ingest/classify.ts` — Vaka Alıcısı sınıflandırma
+- `src/lib/v2/orchestra/engine.ts` — 3-tur state machine (700+ satır)
+
+**API endpoints (7):**
+- `POST /api/v2/workspaces` — workspace oluştur
+- `GET /api/v2/workspaces` — kullanıcı workspace listesi
+- `GET /api/v2/workspaces/[id]` — workspace + tüm data
+- `PATCH /api/v2/workspaces/[id]` — preferences güncelle
+- `POST /api/v2/workspaces/[id]/documents` — multipart upload + OCR + classify
+- `POST /api/v2/workspaces/[id]/orchestrate` — SSE 3-tur stream
+- `POST /api/v2/workspaces/[id]/orchestrate/resume` — checkpoint sonrası devam
+- `POST /api/v2/workspaces/[id]/chat` — Orkestra Şefi chat + @mention routing
+- `GET /api/v2/workspaces/[id]/petition/download?format=md|txt` — dilekçe indirme
+
+**Components (3):**
+- `src/components/v2/workflow/checkpoint-dialog.tsx` — Hibrit checkpoint UI (10sn timeout)
+- `src/components/v2/canvas/quality-gate-view.tsx` — Doygun görsel kalite animasyonu (260 satır)
+- `src/components/v2/settings/workspace-settings-panel.tsx` — Tüm tercih ayarları (300 satır)
+
+#### Değişen dosyalar
+- `src/lib/v2/providers/index.ts` — model adları (`claude-opus-4-6`, `claude-sonnet-4-6`)
+- `src/lib/v2/state/workspace-state.ts` — type genişlemesi (`user_chat`, `agent_chat`)
+- `src/app/v2/page.tsx` — gerçek API'dan workspace listesi
+- `src/app/v2/workspaces/new/page.tsx` — gerçek POST + upload
+- `src/app/v2/workspaces/[id]/page.tsx` — SSR ile data fetch
+- `src/app/v2/workspaces/[id]/workspace-client.tsx` — SSE consumer + state management + settings modal
+- `src/components/v2/canvas/petition-canvas.tsx` — gerçek indirme linkleri
+- `.env.local` — model adları düzeltildi
+
+#### Dependency güvenlik düzeltmesi
+- `form-data` 4.0.0-4.0.5 CVE (CRLF injection, high) → `npm audit fix` ile düzeldi
+- Final audit: 11 vuln (5 low + 6 moderate), **0 critical/high** ✅
+
+#### Önemli teknik notlar
+- **OneProvider model isim formatı:** `claude-opus-4-6` (Anthropic resmi formatı değil)
+- **OpenAI gpt-5.x:** `max_tokens` yerine `max_completion_tokens`, `temperature` parametresi yok
+- **Anthropic her zaman `max_tokens`** kullanır
+- **OneProvider yeni Opus sürümleri mevcut:** `claude-opus-4-7`, `claude-opus-4-8` (kullanıcı isterse upgrade)
+
+#### Build & Test
+- TypeScript: ✅ 0 hata
+- Lint: ✅ exit 0
+- Build: ✅ 46 sayfa, 13s + 50s
+- Runtime: ✅ tüm /v2 sayfaları + 7 API endpoint çalışıyor
+- Live AI: ✅ Anthropic + OpenAI gerçek API üzerinden test edildi
+
+---
+
+### Faz 12 — UDF (UYAP Doküman Formatı) Desteği (✅ Tamam)
+
+**Türk avukat günlük format**: UDF, UYAP'a yüklemek için kullanılan resmi belge formatı. ZIP arşivi + content.xml + documentproperties.xml yapısında.
+
+**Yeni dosyalar:**
+- `src/lib/v2/udf/reader.ts` — UDF dosyalarını okur (content.xml + documentproperties.xml + metadata + signature flag)
+- `src/lib/v2/udf/writer.ts` — Markdown'dan UDF üretir (UYAP Doküman Editörü 1.x format_id=1.8 şeması)
+
+**Değişen dosyalar:**
+- `src/lib/v2/ingest/extract.ts` — UDF branch eklendi (PDF/Word/görsel/TXT/UDF)
+- `src/app/api/v2/workspaces/[id]/petition/download/route.ts` — `?format=udf` parametresi eklendi
+- `src/components/v2/canvas/petition-canvas.tsx` — "📥 UDF (UYAP)" butonu eklendi (altın çerçeveli, vurgulu)
+- `src/components/v2/vault/vault-panel.tsx` — `uyap_belgesi` kategori ikonu
+- `src/app/v2/workspaces/new/page.tsx` — accept=".udf" + hint güncellemesi
+- `src/app/v2/workspaces/[id]/workspace-client.tsx` — accept=".udf"
+
+**Yeni dependency:**
+- `jszip@3.10.1` — ZIP read/write (UDF dosyaları ZIP içeriyor)
+
+**Live test:**
+- ✅ UDF write: 1262 byte üretildi, content.xml (2374B) + documentproperties.xml (514B)
+- ✅ UDF read: 307 char Türkçe metin geri okundu, karakterler bozulmadan
+- ✅ Markdown sentaksı temizlendi (#, **, <!-- --> kayboldu)
+- ✅ Metadata (yazar, sicil, doğrulama kodu) parse ediliyor
+- ✅ E-imza varlığı tespit ediliyor (hasSignature flag)
+
+**Önemli notlar:**
+1. **UDF resmi şeması açık değil** — reverse-engineering ile çıkarıldı. UYAP Doküman Editörü 1.8+ format ile uyumlu test edildi.
+2. **E-imza üretmiyoruz** — sadece okurken algılıyoruz. UYAP'a yüklemek için kullanıcı kendi e-imzasını eklemeli.
+3. **%100 UYAP uyumluluk garantili değil** — UYAP zaman zaman şema değişiklikleri yapıyor. Bozulursa kullanıcı MD/TXT export'a düşer.
+
+**Build & Test:**
+- TypeScript: ✅ 0 hata
+- Build: ✅ 46 sayfa, 42s
+- Audit: ✅ 11 vuln (5 low + 6 moderate), 0 critical/high
+
+---
+
+### Faz 13 — Sektör Lideri Paketi (Senaryo C) ✅ TAMAM
+
+**Hedef**: Harvey/CoCounsel/Legora paritesi + Türk hukuku üstünlüğü
+
+#### Model Upgrade
+- `claude-opus-4-6` → **`claude-opus-4-8`** (OneProvider'da en son)
+- Test: 4 model karşılaştırma, Opus 4.8 en detaylı (131 token vs 97)
+
+#### Yeni dosyalar (13)
+**Lib (6):**
+- `src/lib/v2/tools/bedesten-search.ts` — Yargıtay live search tool
+- `src/lib/v2/storage/upload.ts` — Supabase Storage helper
+- `src/lib/v2/export/word.ts` — docx export
+- `src/lib/v2/export/pdf.ts` — pdfkit export
+- `src/lib/v2/tabular/generator.ts` — Tabular Review AI generator
+- `src/lib/v2/sharing/db.ts` — Multi-user share helpers
+
+**Components (3):**
+- `src/components/v2/tabular/tabular-review-view.tsx` — Legora benzeri matris UI
+- `src/components/v2/sharing/share-panel.tsx` — Email davet UI
+- `src/components/v2/canvas/tiptap-editor.tsx` — WYSIWYG editor
+
+**API endpoints (3):**
+- `POST /api/v2/workspaces/[id]/tabular` — Matris üret
+- `GET/POST /api/v2/workspaces/[id]/shares` — Paylaşım davet
+- `GET/POST /api/v2/workspaces/[id]/petition/versions` — Versiyon yönetimi
+
+**SQL Migration (1):**
+- `0008_storage_and_extensions.sql` — Storage bucket + workspace_shares + tabular_reviews tabloları + RLS genişlemesi
+
+#### Değişen dosyalar (8)
+- `src/lib/v2/providers/index.ts` — Opus 4.8
+- `src/lib/v2/orchestra/engine.ts` — Bedesten entegrasyonu (extractSearchQuery + search çağrısı)
+- `src/app/api/v2/workspaces/[id]/documents/route.ts` — Storage upload
+- `src/app/api/v2/workspaces/[id]/petition/download/route.ts` — docx + pdf format desteği
+- `src/components/v2/canvas/petition-canvas.tsx` — 6 indirme butonu + Tiptap toggle
+- `src/app/v2/workspaces/[id]/workspace-client.tsx` — 3 yeni buton (Tabular + Share + Settings)
+- `.env.local` — Opus 4.8
+- `package.json` + `package-lock.json` — 6 yeni dependency
+
+#### Yeni Dependencies
+- `jszip@3.10.1` (UDF için, Faz 12'den var)
+- `docx@9.7.1` (Word export)
+- `pdfkit@0.19.1` + `@types/pdfkit` (PDF export)
+- `@tiptap/react@3.27.0` + `@tiptap/pm` + `@tiptap/starter-kit` (Rich text editor)
+
+#### Live Test Sonuçları
+- ✅ Build: 47 sayfa, 44s compile
+- ✅ TypeScript: 0 hata
+- ✅ Audit: 11 vuln (5 low + 6 moderate), 0 critical/high
+- ✅ 4 model live test (Opus 4.6/4.7/4.8, Sonnet 4.6) — hepsi çalıştı
+- ✅ Tabular Review: 4 belge × 3 kolon, gerçek AI çıkarma, çelişki tespiti
+- ✅ Word export: 9159 byte, valid DOCX
+- ✅ PDF export: 2987 byte, valid PDF
+- ✅ UDF round-trip (Faz 12'den): hala çalışıyor
+- ✅ Share API: davet oluştu
+
+#### ⚠️ Vercel Deploy Notu
+`HARIS_ORCHESTRATOR_MODEL` env'ini `anthropic:claude-opus-4-8` olarak güncelle. Diğerleri Faz 11+12 ile aynı.
+
+#### ⚠️ Supabase Migration 0008
+`storage.buckets`'a otomatik `workspace-documents` bucket'ı ekler. RLS policy auth.uid()::text dizin yapısı kullanır.
+

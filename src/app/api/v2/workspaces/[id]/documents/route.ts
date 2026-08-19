@@ -21,6 +21,7 @@ import {
 } from "@/lib/v2/ingest/extract";
 import { classifyDocument } from "@/lib/v2/ingest/classify";
 import { extractAndStoreEntities } from "@/lib/v2/memory/extractor";
+import { indexDocument, logIndexingStats } from "@/lib/v2/rag/indexer";
 import { uploadDocumentToStorage } from "@/lib/v2/storage/upload";
 import type { VaultDocument } from "@/lib/v2/state/workspace-state";
 
@@ -154,6 +155,24 @@ export async function POST(
           );
         } catch (extractErr) {
           console.warn("[Auto-extract hatası]", extractErr);
+        }
+
+        // FAZ 13.6: RAG INDEXING — belge içeriğini chunk + embed edip
+        // workspace_document_chunks'a yaz. Semantic search için gerekli.
+        try {
+          const indexStats = await indexDocument({
+            workspaceId: id,
+            documentId: doc.id,
+            text: result.text,
+            metadata: {
+              filename: doc.filename,
+              category: cls.category,
+              mimeType: doc.mimeType,
+            },
+          });
+          logIndexingStats(doc.filename, indexStats);
+        } catch (indexErr) {
+          console.warn("[RAG index hatası]", indexErr);
         }
       } catch (e) {
         await updateDocument(id, doc.id, {

@@ -16,6 +16,7 @@
 import { useState, useRef, useEffect } from "react";
 import { AGENTS, ALL_AGENT_IDS, type AgentId } from "@/lib/v2/orchestra/agents";
 import { MemoryPanel } from "@/components/v2/memory/memory-panel";
+import { PartiesPanel } from "@/components/v2/parties/parties-panel";
 
 interface ChatMessage {
   id: string;
@@ -123,6 +124,7 @@ export function OrchestratorChat({
     <div className="flex flex-col h-full">
       {/* Matter Memory Panel — herzaman görünür (Harvey-style) */}
       {workspaceId && <MemoryPanel workspaceId={workspaceId} />}
+      {workspaceId && <div className="px-2 pt-2"><PartiesPanel workspaceId={workspaceId} /></div>}
 
       {/* Header — chat hafıza göstergesi + temizle */}
       <div className="flex items-center justify-between px-3 py-1.5 border-b border-white/5 bg-white/[0.02]">

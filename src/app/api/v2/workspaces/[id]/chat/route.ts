@@ -37,6 +37,7 @@ import { callAnthropicOptimized } from "@/lib/v2/providers/anthropic-client";
 import { getMatterMemory, readScratchpad } from "@/lib/v2/memory/db";
 import { prepareChatMemory } from "@/lib/v2/memory/summarizer";
 import { buildMemoryPromptBlock } from "@/lib/v2/memory/prompt-builder";
+import { retrieve, formatRetrievalForPrompt } from "@/lib/v2/rag/retriever";
 import type { AnthropicMessage } from "@/lib/v2/providers/anthropic-client";
 
 export const runtime = "nodejs";
@@ -80,15 +81,29 @@ export async function POST(
     type: "user_chat",
   });
 
-  // Context çekimi (paralel)
-  const [documents, agentOutputs, allMessages, matterMemory, scratchpad] =
+  // Context çekimi (paralel) — Faz 13.6: RAG retrieve de dahil
+  const [documents, agentOutputs, allMessages, matterMemory, scratchpad, ragResult] =
     await Promise.all([
       listDocuments(id),
       listAgentOutputs(id),
       listAgentMessages(id),
       getMatterMemory(id, userId),
       readScratchpad(id, userId),
+      // RAG: kullanıcının sorusuna göre matter + global chunks
+      retrieve({
+        workspaceId: id,
+        query: content,
+        matterK: 6,
+        globalK: 4,
+        minSimilarity: 0.55,
+        includeGlobal: true,
+      }).catch((err) => {
+        console.warn("[chat RAG hata]", err);
+        return { matter: [], global: [], query: content, totalHits: 0, durationMs: 0 };
+      }),
     ]);
+
+  const ragBlock = formatRetrievalForPrompt(ragResult);
 
   // Rolling summary: 50 mesaj tam + öncesi özet
   const { summary: chatSummary, recentMessages } = await prepareChatMemory(
@@ -197,6 +212,8 @@ ${documentContext}
 ${outputsSummary}
 
 ${memoryPromptBlock}
+
+${ragBlock ? `\n---\n\n# İLGİLİ REFERANSLAR (Semantic Search)\n\n${ragBlock}` : ""}
 
 ---
 

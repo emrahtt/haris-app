@@ -79,7 +79,7 @@ create table if not exists public.kvkk_requests (
   responded_at timestamptz,
   responded_by uuid references auth.users(id) on delete set null,
   -- KVKK m.13: 30 gün içinde yanıt zorunlu
-  deadline_at timestamptz generated always as (created_at + interval '30 days') stored,
+  deadline_at timestamptz default (now() + interval '30 days'),
   -- Audit
   ip_address inet,
   user_agent text,

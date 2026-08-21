@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -45,7 +44,6 @@ interface BillingStatus {
 }
 
 export function BillingCard() {
-  const router = useRouter();
   const toast = useToast();
   const [status, setStatus] = useState<BillingStatus | null>(null);
   const [loading, setLoading] = useState(true);

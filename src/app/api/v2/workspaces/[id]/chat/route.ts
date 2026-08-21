@@ -44,7 +44,7 @@ export const runtime = "nodejs";
 export const maxDuration = 180;
 
 // Faz 13.5: 50 mesaj tam hafızada tutulur (öncesi rolling summary)
-const KEEP_RECENT_MESSAGES = 70;
+const _KEEP_RECENT_MESSAGES = 70;
 
 // Toplam belge metni karakter bütçesi
 const TOTAL_DOC_CHAR_BUDGET = 120_000; // Fable 5 1M context, cache indirimli
@@ -309,6 +309,31 @@ KURALLAR:
           chatSummaryUsed: !!chatSummary,
           recentMessagesCount: recentMessages.length,
         },
+        citations: {
+          matter: ragResult.matter.map((h) => ({
+            documentId: h.documentId,
+            filename: documents.find((d) => d.id === h.documentId)?.filename ?? "?",
+            sectionTitle: h.sectionTitle,
+            pageNumber: h.pageNumber,
+            snippet: h.content.slice(0, 200),
+            similarity: h.similarity,
+          })),
+          global: ragResult.global.map((h) => ({
+            id: h.id,
+            category: h.category,
+            title: h.title,
+            court: h.court,
+            caseNo: h.caseNo,
+            lawName: h.lawName,
+            articleNo: h.articleNo,
+            date: h.date,
+            url: h.url,
+            snippet: h.content.slice(0, 200),
+            similarity: h.similarity,
+          })),
+          totalHits: ragResult.totalHits,
+          durationMs: ragResult.durationMs,
+        },
       });
     }
 
@@ -347,6 +372,30 @@ KURALLAR:
         documentsError: errorDocs.length,
         documentsPending: pendingDocs.length,
         totalCharsSent: cacheablePrefix.length,
+      },
+      citations: {
+        matter: ragResult.matter.map((h) => ({
+          documentId: h.documentId,
+          filename: documents.find((d) => d.id === h.documentId)?.filename ?? "?",
+          sectionTitle: h.sectionTitle,
+          pageNumber: h.pageNumber,
+          snippet: h.content.slice(0, 200),
+          similarity: h.similarity,
+        })),
+        global: ragResult.global.map((h) => ({
+          id: h.id,
+          category: h.category,
+          title: h.title,
+          court: h.court,
+          caseNo: h.caseNo,
+          lawName: h.lawName,
+          articleNo: h.articleNo,
+          date: h.date,
+          url: h.url,
+          snippet: h.content.slice(0, 200),
+          similarity: h.similarity,
+        })),
+        totalHits: ragResult.totalHits,
       },
     });
   } catch (e) {

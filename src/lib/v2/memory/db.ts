@@ -6,7 +6,7 @@
  */
 
 import { createClient } from "@/lib/supabase/server";
-import { DEMO_USER, isDemoMode } from "@/lib/supabase/config";
+import { isDemoMode } from "@/lib/supabase/config";
 import { uuid } from "../utils/uuid";
 import type {
   MemoryBlock,

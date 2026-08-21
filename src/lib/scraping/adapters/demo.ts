@@ -16,7 +16,7 @@ import type {
   ScrapingJobInput,
 } from "../types";
 
-const COURTS = [
+const _COURTS = [
   "Yargıtay 1. Hukuk Dairesi",
   "Yargıtay 4. Hukuk Dairesi",
   "Yargıtay 9. Hukuk Dairesi",

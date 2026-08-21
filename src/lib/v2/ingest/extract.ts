@@ -15,7 +15,6 @@
 
 import pdfParse from "pdf-parse";
 import mammoth from "mammoth";
-import { PDFDocument as PdfLibDocument } from "pdf-lib";
 import { pdfToPng } from "pdf-to-png-converter";
 import { readUdf, isUdfFile } from "../udf/reader";
 
@@ -42,8 +41,8 @@ export interface ExtractResult {
 }
 
 const MAX_PDF_SIZE = 30 * 1024 * 1024;
-const CHUNK_THRESHOLD_BYTES = 3 * 1024 * 1024;
-const PAGES_PER_CHUNK = 3;
+const _CHUNK_THRESHOLD_BYTES = 3 * 1024 * 1024;
+const _PAGES_PER_CHUNK = 3;
 
 // ─────────────────────────────────────────────────────────
 // ANA FONKSİYON

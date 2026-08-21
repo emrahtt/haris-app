@@ -17,7 +17,6 @@ import {
   Library,
   Search,
   Plus,
-  ArrowRight,
   Eye,
   Flame,
 } from "lucide-react";

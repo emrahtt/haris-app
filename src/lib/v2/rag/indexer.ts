@@ -11,7 +11,7 @@
 
 import { createClient } from "@/lib/supabase/server";
 import { isDemoMode } from "@/lib/supabase/config";
-import { chunkText, chunkStats } from "./chunker";
+import { chunkText } from "./chunker";
 import { embedTexts } from "./embedder";
 import type { IndexingStats } from "./types";
 

@@ -31,6 +31,7 @@ interface ChatMessage {
   content: string;
   timestamp: string;
   rawResponse?: unknown;
+  citations?: import("@/components/v2/chat/citations-view").Citations;
 }
 
 interface Props {
@@ -490,6 +491,7 @@ export function WorkspaceClient({
             minute: "2-digit",
           }),
           rawResponse: data.rawResponse,
+          citations: data.citations,
         },
       ]);
     } catch (e) {

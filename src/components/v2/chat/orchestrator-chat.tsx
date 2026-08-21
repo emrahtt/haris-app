@@ -17,6 +17,7 @@ import { useState, useRef, useEffect } from "react";
 import { AGENTS, ALL_AGENT_IDS, type AgentId } from "@/lib/v2/orchestra/agents";
 import { MemoryPanel } from "@/components/v2/memory/memory-panel";
 import { PartiesPanel } from "@/components/v2/parties/parties-panel";
+import { CitationsView, type Citations } from "@/components/v2/chat/citations-view";
 
 interface ChatMessage {
   id: string;
@@ -26,6 +27,7 @@ interface ChatMessage {
   timestamp: string;
   rawResponse?: unknown;
   systemPrompt?: string;
+  citations?: Citations;
 }
 
 interface OrchestratorChatProps {
@@ -361,6 +363,9 @@ function ChatBubble({
         >
           <div className="whitespace-pre-wrap break-words">{message.content}</div>
         </div>
+        {!isUser && message.citations && message.citations.totalHits > 0 && (
+          <CitationsView citations={message.citations} />
+        )}
         {!isUser && message.rawResponse != null && (
           <div className="mt-1">
             <button

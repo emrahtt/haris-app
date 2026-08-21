@@ -9,12 +9,10 @@ import { useCaseContext } from "@/hooks/use-case-context";
 import { RagProvenancePanel } from "@/components/rag/rag-provenance";
 import { useToast } from "@/components/ui/toast-provider";
 import type { LegalCase } from "@/lib/data/types";
-import type { AgentId } from "@/lib/ai/prompts";
 import {
   Sparkles,
   Flame,
   Eye,
-  Shield,
   Brain,
   StopCircle,
   RotateCcw,

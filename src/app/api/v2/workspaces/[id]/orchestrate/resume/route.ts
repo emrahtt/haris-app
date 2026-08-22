@@ -14,6 +14,7 @@ import {
 } from "@/lib/v2/workspace/db";
 import { runOrchestra, type StreamEvent } from "@/lib/v2/orchestra/engine";
 import type { AgentId } from "@/lib/v2/orchestra/agents";
+import { assertUserCanUseAi } from "@/lib/billing/gate";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -34,6 +35,13 @@ export async function POST(
   if (!ws) {
     return new Response(JSON.stringify({ error: "Bulunamadı" }), {
       status: 404,
+    });
+  }
+
+  const quota = await assertUserCanUseAi(userId, 2);
+  if (!quota.allowed) {
+    return new Response(JSON.stringify({ error: quota.reason, quota }), {
+      status: 402,
     });
   }
 

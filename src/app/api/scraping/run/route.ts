@@ -2,6 +2,8 @@ import { NextRequest } from "next/server";
 import { z } from "zod";
 import { runJob } from "@/lib/scraping/job-runner";
 import type { ScrapingJobInput } from "@/lib/scraping/types";
+import { getCurrentUserId } from "@/lib/v2/workspace/auth";
+import { checkScrapingLimit, incrementUsage } from "@/lib/billing/subscriptions-db";
 
 export const runtime = "nodejs";
 export const maxDuration = 300; // 5 dakika

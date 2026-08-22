@@ -2,6 +2,8 @@ import { NextRequest } from "next/server";
 import { z } from "zod";
 import { runAgentStream } from "@/lib/ai/orchestrator";
 import { AGENT_PROMPTS } from "@/lib/ai/prompts";
+import { getCurrentUserId } from "@/lib/v2/workspace/auth";
+import { assertUserCanUseAi, consumeAiCall } from "@/lib/billing/gate";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -38,6 +40,15 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    const userId = await getCurrentUserId();
+    const quota = await assertUserCanUseAi(userId, 1);
+    if (!quota.allowed) {
+      return new Response(JSON.stringify({ error: quota.reason, quota }), {
+        status: 402,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    await consumeAiCall(userId, 1);
     return await runAgentStream(parsed.data);
   } catch (err) {
     console.error("[agents/run] Hata:", err);

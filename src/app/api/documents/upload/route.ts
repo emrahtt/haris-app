@@ -10,6 +10,8 @@ import {
 } from "@/lib/ingest/types";
 import { createClient } from "@/lib/supabase/server";
 import { isDemoMode, DEMO_USER } from "@/lib/supabase/config";
+import { assertUserCanUseAi, consumeAiCall } from "@/lib/billing/gate";
+import { incrementUsage } from "@/lib/billing/subscriptions-db";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -65,6 +67,11 @@ export async function POST(req: NextRequest) {
         { error: "file ve caseId zorunlu" },
         { status: 400 }
       );
+    }
+
+    const quota = await assertUserCanUseAi(userId, 1);
+    if (!quota.allowed) {
+      return NextResponse.json({ error: quota.reason, quota }, { status: 402 });
     }
 
     if (file.size > MAX_SIZE) {
@@ -135,6 +142,8 @@ export async function POST(req: NextRequest) {
         : "Belge sınıflandırılamadı (metin çok kısa veya AI hata verdi)",
     };
     await updateDocument(doc);
+    await consumeAiCall(userId, 1);
+    await incrementUsage("documents_uploaded", 1, userId);
 
     return NextResponse.json({
       doc,

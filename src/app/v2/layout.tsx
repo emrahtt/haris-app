@@ -36,6 +36,12 @@ export default function V2Layout({ children }: { children: React.ReactNode }) {
             </Link>
           </div>
           <div className="flex items-center gap-4 text-sm">
+            <Link
+              href="/v2/analytics"
+              className="text-slate-400 hover:text-[#C9A961] transition"
+            >
+              Analitik
+            </Link>
             <a
               href="/dashboard"
               className="text-slate-400 hover:text-slate-200 transition"

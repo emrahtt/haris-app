@@ -14,6 +14,7 @@ import { MethodPicker, type ExtractionMethod } from "@/components/v2/vault/metho
 import { TabularReviewView } from "@/components/v2/tabular/tabular-review-view";
 import { SharePanel } from "@/components/v2/sharing/share-panel";
 import { OrchestraRail } from "@/components/v2/layout/orchestra-rail";
+import { HelpTips } from "@/components/v2/layout/help-tips";
 import type {
   VaultDocument,
   AgentOutput,
@@ -261,7 +262,10 @@ export function WorkspaceClient({
 
     while (true) {
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done) {
+        console.log("[SSE] stream tamamlandı", new Date().toISOString());
+        break;
+      }
       buffer += decoder.decode(value, { stream: true });
       const events = buffer.split("\n\n");
       buffer = events.pop() ?? "";
@@ -345,13 +349,21 @@ export function WorkspaceClient({
         setOpenCheckpointId((event.checkpoint as UserCheckpoint).id);
         setOrchestraStatus("paused_for_user");
         break;
-      case "petition_draft":
+      case "petition_draft": {
+        const md = event.markdown as string;
+        console.log(
+          `[SSE petition_draft] v${event.version} · ${md?.length ?? 0} chars`
+        );
+        console.log(
+          `[CANVAS] petition_draft v${event.version} alındı`
+        );
         setPetition({
           version: event.version as number,
-          markdown: event.markdown as string,
+          markdown: md,
           quality: event.quality,
         });
         break;
+      }
       case "orchestrator_message":
         if (typeof window !== "undefined") {
           window.dispatchEvent(new CustomEvent("haris:memory-refresh"));

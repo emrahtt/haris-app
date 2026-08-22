@@ -49,12 +49,30 @@ export async function POST(
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
+      let closed = false;
+      const heartbeat = setInterval(() => {
+        if (closed) return;
+        try {
+          controller.enqueue(encoder.encode(`: keepalive ${Date.now()}\n\n`));
+        } catch {
+          /* stream kapandı */
+        }
+      }, 15_000);
+
       const emit = (event: StreamEvent) => {
         try {
+          if (event.type === "petition_draft") {
+            console.log(
+              `[SSE→] petition_draft v${event.version} · ${event.markdown?.length ?? 0} chars`
+            );
+          } else {
+            console.log(`[SSE→] ${event.type}`);
+          }
           const line = `data: ${JSON.stringify(event)}\n\n`;
           controller.enqueue(encoder.encode(line));
-          // Side-effect: DB persist
-          void persistEvent(id, userId, event).catch(() => {});
+          void persistEvent(id, userId, event).catch((err) =>
+            console.error("[SSE persist]", err)
+          );
         } catch (e) {
           console.error("[SSE emit hatası]", e);
         }
@@ -90,6 +108,8 @@ export async function POST(
           orchestration_status: "error",
         });
       } finally {
+        closed = true;
+        clearInterval(heartbeat);
         controller.close();
       }
     },
@@ -134,6 +154,16 @@ async function persistEvent(
           systemPrompt: agent.systemPrompt,
         }
       );
+      const ws = await getWorkspace(workspaceId, userId);
+      if (ws) {
+        await updateWorkspace(workspaceId, userId, {
+          total_cost_usd: Number(ws.total_cost_usd ?? 0) + (event.cost ?? 0),
+          total_tokens_input:
+            Number(ws.total_tokens_input ?? 0) + (event.tokensUsed?.input ?? 0),
+          total_tokens_output:
+            Number(ws.total_tokens_output ?? 0) + (event.tokensUsed?.output ?? 0),
+        });
+      }
       break;
     }
     case "agent_message":

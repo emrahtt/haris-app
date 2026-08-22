@@ -174,10 +174,7 @@ async function persistEvent(
           systemPrompt: agent.systemPrompt,
         }
       );
-<<<<<<< HEAD
-=======
       await consumeAiCall(userId, 1);
->>>>>>> ef09519 (Kullanıcı bazlı AI kota ve Stripe ödeme: başkasının API bakiyesi tükenmez.)
       const ws = await getWorkspace(workspaceId, userId);
       if (ws) {
         await updateWorkspace(workspaceId, userId, {

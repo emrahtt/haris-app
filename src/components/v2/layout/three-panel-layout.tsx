@@ -29,6 +29,7 @@ export function ThreePanelLayout({
   canvas,
   chat,
   internalDialogs,
+  matterRail,
 }: ThreePanelLayoutProps) {
   const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [rightCollapsed, setRightCollapsed] = useState(false);

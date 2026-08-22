@@ -1,7 +1,7 @@
 "use client";
 
 import { uuid } from "@/lib/v2/utils/uuid";
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useRef } from "react";
 import { ThreePanelLayout } from "@/components/v2/layout/three-panel-layout";
 import { VaultPanel } from "@/components/v2/vault/vault-panel";
 import { WorkflowViewer } from "@/components/v2/workflow/workflow-viewer";
@@ -650,6 +650,12 @@ export function WorkspaceClient({
           <h2 className="text-sm font-semibold truncate max-w-md">
             {workspace.title}
           </h2>
+          <span className="text-[11px] text-slate-500 truncate max-w-xs">
+            {workspace.preferences?.court || "Mahkeme seçilmedi"}
+            {workspace.preferences?.esasNo
+              ? ` · ${workspace.preferences.esasNo}`
+              : ""}
+          </span>
           {orchestraStatus === "running" ? (
             <span className="inline-flex items-center gap-1.5 text-[10px] uppercase tracking-widest text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 rounded-full px-2 py-0.5">
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />

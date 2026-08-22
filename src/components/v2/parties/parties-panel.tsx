@@ -27,6 +27,7 @@ export function PartiesPanel({ workspaceId }: Props) {
   const [parties, setParties] = useState<Party[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
+  const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
 
   // Form state
@@ -158,19 +159,31 @@ export function PartiesPanel({ workspaceId }: Props) {
   };
 
   return (
-    <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-4">
-      <div className="flex items-center justify-between mb-3">
-        <h3 className="text-sm font-semibold text-[#C9A961] uppercase tracking-wider">
-          ⚖️ Taraflar ({parties.length})
-        </h3>
+    <div className="rounded-lg border border-slate-800 bg-slate-950/60">
+      <div className="flex items-center justify-between px-3 py-2">
         <button
           type="button"
-          onClick={() => setShowForm(!showForm)}
-          className="text-xs px-3 py-1.5 rounded bg-[#C9A961] text-[#0A1628] hover:bg-[#B89751] transition font-medium"
+          onClick={() => setOpen(!open)}
+          className="flex items-center gap-2 text-left"
         >
-          {showForm ? "− Kapat" : "+ Taraf Ekle"}
+          <h3 className="text-xs font-semibold text-[#C9A961] uppercase tracking-wider">
+            ⚖️ Taraflar ({parties.length})
+          </h3>
+          <span className="text-slate-500 text-xs">{open ? "▾" : "▸"}</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setOpen(true);
+            setShowForm(!showForm);
+          }}
+          className="text-[10px] px-2 py-1 rounded bg-[#C9A961] text-[#0A1628] hover:bg-[#B89751] transition font-medium"
+        >
+          {showForm ? "−" : "+ Ekle"}
         </button>
       </div>
+      {!open ? null : (
+      <div className="px-3 pb-3 max-h-40 overflow-y-auto overscroll-contain">
 
       {/* Conflict Banner */}
       {conflictHits.length > 0 && (
@@ -315,6 +328,8 @@ export function PartiesPanel({ workspaceId }: Props) {
             );
           })}
         </ul>
+      )}
+      </div>
       )}
     </div>
   );

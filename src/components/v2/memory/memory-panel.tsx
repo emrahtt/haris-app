@@ -61,7 +61,7 @@ const CATEGORY_META: Record<
 
 export function MemoryPanel({ workspaceId, onMemoryChange }: Props) {
   const [memory, setMemory] = useState<MatterMemory | null>(null);
-  const [isExpanded, setIsExpanded] = useState(true);
+  const [isExpanded, setIsExpanded] = useState(false);
   const [addingNote, setAddingNote] = useState(false);
   const [newNote, setNewNote] = useState("");
   const [loading, setLoading] = useState(true);
@@ -203,7 +203,7 @@ export function MemoryPanel({ workspaceId, onMemoryChange }: Props) {
       </button>
 
       {isExpanded && (
-        <div className="px-3 pb-3 max-h-[45vh] overflow-y-auto">
+        <div className="px-3 pb-3 max-h-36 overflow-y-auto overscroll-contain">
           {loading && (
             <div className="text-[10px] text-slate-500 text-center py-2">
               Yükleniyor…

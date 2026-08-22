@@ -13,7 +13,7 @@ import { WorkspaceSettingsPanel } from "@/components/v2/settings/workspace-setti
 import { MethodPicker, type ExtractionMethod } from "@/components/v2/vault/method-picker";
 import { TabularReviewView } from "@/components/v2/tabular/tabular-review-view";
 import { SharePanel } from "@/components/v2/sharing/share-panel";
-import { V1Bridge } from "@/components/v2/layout/v1-bridge";
+import { OrchestraRail } from "@/components/v2/layout/orchestra-rail";
 import type {
   VaultDocument,
   AgentOutput,
@@ -622,57 +622,6 @@ export function WorkspaceClient({
             </span>
           )}
         </div>
-        <button
-          onClick={startOrchestration}
-          disabled={
-            isOrchestrating ||
-            orchestraStatus === "running" ||
-            documents.length === 0
-          }
-          className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition ${
-            !isOrchestrating &&
-            orchestraStatus !== "running" &&
-            documents.length > 0
-              ? "bg-[#C9A961] text-[#0A1628] hover:bg-[#e6c479]"
-              : "bg-white/5 text-slate-500 cursor-not-allowed"
-          }`}
-        >
-          {orchestraStatus === "running" ? (
-            <span className="inline-flex items-center gap-2">
-              <span className="w-3.5 h-3.5 border-2 border-slate-400/40 border-t-slate-100 rounded-full animate-spin" />
-              Çalışıyor…
-            </span>
-          ) : orchestraStatus === "completed" ? (
-            "Yeniden Başlat"
-          ) : (
-            "🎼 Süreci Başlat"
-          )}
-        </button>
-        <button
-          onClick={() => setShowTabular(true)}
-          className="ml-2 px-3 py-1.5 rounded-lg text-sm border border-white/10 hover:bg-white/5 text-slate-300"
-          title="Belge Matrisi (Tabular Review)"
-          disabled={documents.length === 0}
-        >
-          📊
-        </button>
-        <button
-          onClick={() => setShowShare(true)}
-          className="ml-1 px-3 py-1.5 rounded-lg text-sm border border-white/10 hover:bg-white/5 text-slate-300"
-          title="Paylaş"
-        >
-          🤝
-        </button>
-        <div className="ml-1">
-          <V1Bridge workspaceId={workspaceId} />
-        </div>
-        <button
-          onClick={() => setShowSettings(true)}
-          className="ml-1 px-3 py-1.5 rounded-lg text-sm border border-white/10 hover:bg-white/5 text-slate-300"
-          title="Workspace ayarları"
-        >
-          ⚙️
-        </button>
       </div>
 
       <ThreePanelLayout
@@ -709,8 +658,8 @@ export function WorkspaceClient({
               }
               emptyHint={
                 documents.length === 0
-                  ? "Sol panelden belge ekleyin, sonra üst bardaki '🎼 Süreci Başlat' düğmesine basın."
-                  : "Orkestra Şefi sürec başlatıldığında dilekçe taslağı burada belirecek."
+                  ? "Sol panelden belge ekleyin, sonra Matter panelinin solundaki dikey 'İşlemi Başlat' çubuğuna basın."
+                  : "Orkestra Şefi süreç başlatıldığında dilekçe taslağı burada belirecek."
               }
             />
           )

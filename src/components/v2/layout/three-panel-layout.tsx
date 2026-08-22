@@ -19,6 +19,8 @@ interface ThreePanelLayoutProps {
   canvas: React.ReactNode;
   chat: React.ReactNode;
   internalDialogs?: React.ReactNode; // İç diyalog dock (Karar 9)
+  /** Matter panelinin soluna yapışık dikey çubuk */
+  matterRail?: React.ReactNode;
 }
 
 export function ThreePanelLayout({
@@ -128,10 +130,11 @@ export function ThreePanelLayout({
       {/* ─── ORTA PANEL: CANVAS ─── */}
       <main className="flex-1 overflow-y-auto bg-[#0E1B30]">{canvas}</main>
 
-      {/* ─── SAĞ PANEL: CHAT ─── */}
+      {/* ─── DİKEY İŞLEM ÇUBUĞU + SAĞ PANEL (MATTER) ─── */}
+      {matterRail}
       <aside
         className={`relative flex flex-col border-l border-white/10 bg-[#0A1628] transition-all duration-200 ${
-          rightCollapsed ? "w-12" : "w-96"
+          rightCollapsed ? "w-12" : "w-[26rem]"
         }`}
       >
         {rightCollapsed ? (

@@ -64,31 +64,69 @@ export async function POST(
     .join("\n\n");
 
   try {
-    // 1. V1 case oluştur
-    const { data: caseRow, error: caseErr } = await supabase
-      .from("cases")
-      .insert({
-        user_id: userId,
-        title: `${ws.title} (V2'den aktarıldı)`,
-        description: ws.case_description || "",
-        case_type: ws.case_type || "diğer",
-        status: "active",
-        notes: chatSummary,
-        metadata: {
-          v2_workspace_id: id,
-          v2_memory: memory,
-          v2_document_count: documents.length,
-          imported_at: new Date().toISOString(),
-        },
-      })
-      .select()
-      .single();
+    const metadata = {
+      v2_workspace_id: id,
+      v2_memory: memory,
+      v2_document_count: documents.length,
+      imported_at: new Date().toISOString(),
+      case_type: ws.case_type,
+    };
 
-    if (caseErr) {
-      return NextResponse.json(
-        { error: `Case oluşturma hatası: ${caseErr.message}` },
-        { status: 500 }
-      );
+    // Aynı workspace daha önce aktarıldıysa üzerine yaz (çift case üretme)
+    const { data: existing } = await supabase
+      .from("cases")
+      .select("id")
+      .eq("user_id", userId)
+      .contains("metadata", { v2_workspace_id: id })
+      .maybeSingle();
+
+    let caseRow: { id: string } | null = existing;
+
+    if (caseRow) {
+      const { error: updErr } = await supabase
+        .from("cases")
+        .update({
+          title: ws.title,
+          description: ws.case_description || "",
+          summary: ws.case_description || "",
+          case_type: ws.case_type || "diğer",
+          notes: chatSummary,
+          metadata,
+        })
+        .eq("id", caseRow.id);
+      if (updErr) {
+        return NextResponse.json(
+          { error: `Case güncelleme hatası: ${updErr.message}` },
+          { status: 500 }
+        );
+      }
+    } else {
+      const { data: inserted, error: caseErr } = await supabase
+        .from("cases")
+        .insert({
+          user_id: userId,
+          title: ws.title,
+          description: ws.case_description || "",
+          summary: ws.case_description || "",
+          case_type: ws.case_type || "diğer",
+          status: "active",
+          notes: chatSummary,
+          metadata,
+        })
+        .select()
+        .single();
+
+      if (caseErr) {
+        return NextResponse.json(
+          { error: `Case oluşturma hatası: ${caseErr.message}` },
+          { status: 500 }
+        );
+      }
+      caseRow = inserted;
+    }
+
+    if (!caseRow) {
+      return NextResponse.json({ error: "Case oluşturulamadı" }, { status: 500 });
     }
 
     // 2. Belgeleri V1 documents tablosuna kopyala

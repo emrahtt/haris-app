@@ -123,10 +123,15 @@ export function OrchestratorChat({
   ).slice(0, 6);
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Matter Memory Panel — herzaman görünür (Harvey-style) */}
-      {workspaceId && <MemoryPanel workspaceId={workspaceId} />}
-      {workspaceId && <div className="px-2 pt-2"><PartiesPanel workspaceId={workspaceId} /></div>}
+    <div className="flex flex-col h-full min-h-0">
+      <div className="shrink-0 max-h-[38%] overflow-y-auto overscroll-contain border-b border-white/10">
+        {workspaceId && <MemoryPanel workspaceId={workspaceId} />}
+        {workspaceId && (
+          <div className="px-2 py-1.5">
+            <PartiesPanel workspaceId={workspaceId} />
+          </div>
+        )}
+      </div>
 
       {/* Header — chat hafıza göstergesi + temizle */}
       <div className="flex items-center justify-between px-3 py-1.5 border-b border-white/5 bg-white/[0.02]">

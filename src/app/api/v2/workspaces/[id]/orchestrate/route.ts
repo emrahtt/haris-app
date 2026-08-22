@@ -22,7 +22,7 @@ import {
 } from "@/lib/v2/orchestra/engine";
 import { AGENTS } from "@/lib/v2/orchestra/agents";
 import { MODEL_REGISTRY } from "@/lib/v2/providers";
-import { assertWithinBudget } from "@/lib/v2/billing/quota";
+import { consumeAiCall, assertUserCanUseAi } from "@/lib/billing/gate";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -40,9 +40,9 @@ export async function POST(
       headers: { "Content-Type": "application/json" },
     });
   }
-  const budget = await assertWithinBudget(userId);
-  if (!budget.ok) {
-    return new Response(JSON.stringify({ error: budget.message }), {
+  const quota = await assertUserCanUseAi(userId, 4);
+  if (!quota.allowed) {
+    return new Response(JSON.stringify({ error: quota.reason, quota }), {
       status: 402,
       headers: { "Content-Type": "application/json" },
     });
@@ -174,6 +174,10 @@ async function persistEvent(
           systemPrompt: agent.systemPrompt,
         }
       );
+<<<<<<< HEAD
+=======
+      await consumeAiCall(userId, 1);
+>>>>>>> ef09519 (Kullanıcı bazlı AI kota ve Stripe ödeme: başkasının API bakiyesi tükenmez.)
       const ws = await getWorkspace(workspaceId, userId);
       if (ws) {
         await updateWorkspace(workspaceId, userId, {

@@ -7,6 +7,7 @@
 
 import type { Metadata } from "next";
 import Link from "next/link";
+import { UsageMeter } from "@/components/billing/usage-meter";
 
 export const metadata: Metadata = {
   title: "HARIS v2 · Matter Workspace",
@@ -36,6 +37,13 @@ export default function V2Layout({ children }: { children: React.ReactNode }) {
             </Link>
           </div>
           <div className="flex items-center gap-4 text-sm">
+            <UsageMeter />
+            <Link
+              href="/pricing"
+              className="text-slate-400 hover:text-[#C9A961] transition"
+            >
+              Plan
+            </Link>
             <Link
               href="/v2/analytics"
               className="text-slate-400 hover:text-[#C9A961] transition"

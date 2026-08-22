@@ -38,6 +38,7 @@ import { getMatterMemory, readScratchpad } from "@/lib/v2/memory/db";
 import { prepareChatMemory } from "@/lib/v2/memory/summarizer";
 import { buildMemoryPromptBlock } from "@/lib/v2/memory/prompt-builder";
 import { retrieve, formatRetrievalForPrompt } from "@/lib/v2/rag/retriever";
+import { assertUserCanUseAi, consumeAiCall } from "@/lib/billing/gate";
 import type { RetrievalResult } from "@/lib/v2/rag/types";
 import type { VaultDocument } from "@/lib/v2/state/workspace-state";
 import type { AnthropicMessage } from "@/lib/v2/providers/anthropic-client";
@@ -65,6 +66,14 @@ export async function POST(
 
   if (!content?.trim()) {
     return NextResponse.json({ error: "İçerik boş" }, { status: 400 });
+  }
+
+  const quota = await assertUserCanUseAi(userId, 1);
+  if (!quota.allowed) {
+    return NextResponse.json(
+      { error: quota.reason, reply: quota.reason, quota },
+      { status: 402 }
+    );
   }
 
   const ws = await getWorkspace(id, userId);
@@ -277,6 +286,7 @@ KURALLAR:
         type: "agent_chat",
       });
 
+      await consumeAiCall(userId, 1);
       const citedReply = appendFootnotes(result.content, ragResult, documents);
 
       return NextResponse.json({

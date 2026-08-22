@@ -78,8 +78,11 @@ export interface NormalizedWebhookEvent {
     | "subscription.cancelled"
     | "invoice.paid"
     | "invoice.failed"
+    | "credits.purchased"
     | "unknown";
   userId?: string;
+  creditPackId?: string;
+  creditCalls?: number;
   customerEmail?: string;
   subscriptionId?: string;
   customerId?: string;

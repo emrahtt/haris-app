@@ -163,6 +163,9 @@ export function BillingCard() {
             >
               {status.quotas.aiCalls.used.toLocaleString("tr-TR")} /{" "}
               {status.quotas.aiCalls.limit.toLocaleString("tr-TR")}
+              {(status as { bonusAiCalls?: number }).bonusAiCalls
+                ? ` (+${(status as { bonusAiCalls?: number }).bonusAiCalls} paket)`
+                : ""}
             </span>
           </div>
           <div className="h-2 bg-[var(--color-bg-3)] rounded-full overflow-hidden">

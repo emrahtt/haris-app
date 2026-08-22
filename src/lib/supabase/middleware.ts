@@ -13,6 +13,13 @@ export async function updateSession(request: NextRequest) {
   let supabaseResponse = NextResponse.next({ request });
 
   const pathname = request.nextUrl.pathname;
+
+  // Büyük harf /V2 → /v2 (telefon/Outlook otomatik büyük harf yapabiliyor)
+  if (pathname === "/V2" || pathname.startsWith("/V2/")) {
+    const url = request.nextUrl.clone();
+    url.pathname = "/v2" + pathname.slice(3);
+    return NextResponse.redirect(url);
+  }
   // Faz 13.5.5: /v2 Matter Workspace de artık auth zorunlu (matter isolation için)
   const isProtected =
     pathname.startsWith("/dashboard") ||

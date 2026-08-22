@@ -38,6 +38,8 @@ import { getMatterMemory, readScratchpad } from "@/lib/v2/memory/db";
 import { prepareChatMemory } from "@/lib/v2/memory/summarizer";
 import { buildMemoryPromptBlock } from "@/lib/v2/memory/prompt-builder";
 import { retrieve, formatRetrievalForPrompt } from "@/lib/v2/rag/retriever";
+import type { RetrievalResult } from "@/lib/v2/rag/types";
+import type { VaultDocument } from "@/lib/v2/state/workspace-state";
 import type { AnthropicMessage } from "@/lib/v2/providers/anthropic-client";
 
 export const runtime = "nodejs";
@@ -275,8 +277,10 @@ KURALLAR:
         type: "agent_chat",
       });
 
+      const citedReply = appendFootnotes(result.content, ragResult, documents);
+
       return NextResponse.json({
-        reply: result.content,
+        reply: citedReply,
         rawResponse: result.rawResponse,
         tokensUsed: {
           input: result.usage.inputTokens,
@@ -357,7 +361,7 @@ KURALLAR:
     });
 
     return NextResponse.json({
-      reply: result.content,
+      reply: appendFootnotes(result.content, ragResult, documents),
       rawResponse: result.rawResponse,
       tokensUsed: result.tokensUsed,
       cost: result.cost,
@@ -495,4 +499,27 @@ async function callOpenAI(
     cost: (ti * costIn + to * costOut) / 1_000_000,
     rawResponse: data,
   };
+}
+
+function appendFootnotes(
+  reply: string,
+  rag: RetrievalResult,
+  documents: VaultDocument[]
+): string {
+  if (!rag || rag.totalHits === 0) return reply;
+  const lines: string[] = ["", "---", "Kaynaklar:"];
+  let n = 1;
+  for (const h of rag.matter.slice(0, 6)) {
+    const name =
+      documents.find((d) => d.id === h.documentId)?.filename ?? "Belge";
+    lines.push(
+      `[${n++}] ${name}${h.pageNumber ? ` s.${h.pageNumber}` : ""} — ${h.content.slice(0, 120)}`
+    );
+  }
+  for (const h of rag.global.slice(0, 4)) {
+    lines.push(
+      `[${n++}] ${h.lawName ?? h.court ?? h.title}${h.articleNo ? ` m.${h.articleNo}` : ""}`
+    );
+  }
+  return `${reply}\n${lines.join("\n")}`;
 }

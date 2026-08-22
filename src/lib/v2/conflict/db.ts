@@ -8,6 +8,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { isDemoMode } from "@/lib/supabase/config";
 import { uuid } from "../utils/uuid";
+import { similarity } from "./fuzzy";
 
 export type PartyRole =
   | "muvekkil"
@@ -188,8 +189,9 @@ export async function checkConflict(params: {
       for (const p of list) {
         if (p.userId !== userId) continue;
         const nameMatch = normalizeName(p.fullName) === normalized;
+        const fuzzy = similarity(p.fullName, fullName) >= 0.78;
         const tcMatch = tcNo && p.tcNo === tcNo;
-        if (nameMatch || tcMatch) {
+        if (nameMatch || tcMatch || fuzzy) {
           hits.push({
             workspaceId: wsId,
             workspaceTitle: `Demo Workspace ${wsId}`,
@@ -197,7 +199,11 @@ export async function checkConflict(params: {
             partyId: p.id,
             partyRole: p.role,
             partyName: p.fullName,
-            matchType: tcMatch ? "tc_match" : "exact_name",
+            matchType: tcMatch
+              ? "tc_match"
+              : nameMatch
+                ? "exact_name"
+                : "fuzzy_name",
             severity:
               p.role === "karsi_taraf"
                 ? "critical"
@@ -214,11 +220,21 @@ export async function checkConflict(params: {
   const supabase = await createClient();
   if (!supabase) return [];
 
-  const { data, error } = await supabase.rpc("check_conflict", {
+  let { data, error } = await supabase.rpc("check_conflict_fuzzy", {
     p_full_name: fullName,
     p_tc_no: tcNo ?? null,
     p_exclude_workspace_id: excludeWorkspaceId ?? null,
   });
+
+  if (error) {
+    const fallback = await supabase.rpc("check_conflict", {
+      p_full_name: fullName,
+      p_tc_no: tcNo ?? null,
+      p_exclude_workspace_id: excludeWorkspaceId ?? null,
+    });
+    data = fallback.data;
+    error = fallback.error;
+  }
 
   if (error) {
     console.error("[checkConflict]", error);

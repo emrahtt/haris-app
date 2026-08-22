@@ -90,6 +90,8 @@ export async function POST(
           description: ws.case_description || "",
           summary: ws.case_description || "",
           case_type: ws.case_type || "diğer",
+          court: ws.preferences?.court || "",
+          esas_no: ws.preferences?.esasNo || "",
           notes: chatSummary,
           metadata,
         })
@@ -109,6 +111,8 @@ export async function POST(
           description: ws.case_description || "",
           summary: ws.case_description || "",
           case_type: ws.case_type || "diğer",
+          court: ws.preferences?.court || "",
+          esas_no: ws.preferences?.esasNo || "",
           status: "active",
           notes: chatSummary,
           metadata,
@@ -132,6 +136,24 @@ export async function POST(
     // 2. Belgeleri V1 documents tablosuna kopyala
     let docCount = 0;
     for (const doc of documents) {
+      const { data: existingDoc } = await supabase
+        .from("documents")
+        .select("id")
+        .eq("case_id", caseRow.id)
+        .eq("filename", doc.filename)
+        .maybeSingle();
+      if (existingDoc) {
+        await supabase
+          .from("documents")
+          .update({
+            summary: doc.summary,
+            extracted_text: doc.extractedText,
+            status: doc.status,
+          })
+          .eq("id", existingDoc.id);
+        docCount++;
+        continue;
+      }
       const { error: docErr } = await supabase.from("documents").insert({
         user_id: userId,
         case_id: caseRow.id,

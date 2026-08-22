@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 const STEPS = [
   {
@@ -33,6 +33,14 @@ const STEPS = [
 export function HelpTips() {
   const [open, setOpen] = useState(false);
 
+  useEffect(() => {
+    try {
+      if (!localStorage.getItem("haris_tour_seen")) setOpen(true);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
   return (
     <div className="fixed bottom-4 left-4 z-40">
       {open && (
@@ -43,7 +51,14 @@ export function HelpTips() {
             </h3>
             <button
               type="button"
-              onClick={() => setOpen(false)}
+              onClick={() => {
+                try {
+                  localStorage.setItem("haris_tour_seen", "1");
+                } catch {
+                  /* ignore */
+                }
+                setOpen(false);
+              }}
               className="text-slate-500 hover:text-slate-200 text-xs"
             >
               ✕

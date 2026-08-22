@@ -22,9 +22,10 @@ import {
 } from "@/lib/v2/orchestra/engine";
 import { AGENTS } from "@/lib/v2/orchestra/agents";
 import { MODEL_REGISTRY } from "@/lib/v2/providers";
+import { assertWithinBudget } from "@/lib/v2/billing/quota";
 
 export const runtime = "nodejs";
-export const maxDuration = 300; // 5 dakika
+export const maxDuration = 300;
 
 export async function POST(
   _req: NextRequest,
@@ -39,6 +40,14 @@ export async function POST(
       headers: { "Content-Type": "application/json" },
     });
   }
+  const budget = await assertWithinBudget(userId);
+  if (!budget.ok) {
+    return new Response(JSON.stringify({ error: budget.message }), {
+      status: 402,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
   const documents = await listDocuments(id);
 
   await updateWorkspace(id, userId, {
@@ -59,7 +68,9 @@ export async function POST(
         }
       }, 15_000);
 
+      let lastType = "";
       const emit = (event: StreamEvent) => {
+        lastType = event.type;
         try {
           if (event.type === "petition_draft") {
             console.log(
@@ -85,7 +96,13 @@ export async function POST(
             userId,
             caseTitle: ws.title,
             caseType: ws.case_type,
-            caseDescription: ws.case_description,
+            caseDescription: [
+              ws.case_description,
+              ws.preferences?.court ? `Mahkeme: ${ws.preferences.court}` : "",
+              ws.preferences?.esasNo ? `Esas: ${ws.preferences.esasNo}` : "",
+            ]
+              .filter(Boolean)
+              .join("\n"),
             documents,
             preferences: {
               petitionLength:
@@ -94,13 +111,16 @@ export async function POST(
               checkpointMode:
                 ws.preferences?.checkpointMode ?? "ask_on_conflict",
               enabledAgents: ws.preferences?.enabledAgents ?? [],
+              court: ws.preferences?.court,
+              esasNo: ws.preferences?.esasNo,
             },
           },
           emit
         );
+        const finished = lastType === "completed";
         await updateWorkspace(id, userId, {
-          orchestration_status: "completed",
-          current_round: 3,
+          orchestration_status: finished ? "completed" : "paused_for_user",
+          current_round: finished ? 3 : 1,
         });
       } catch (e) {
         emit({ type: "error", message: String(e) });

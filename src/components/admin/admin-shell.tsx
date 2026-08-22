@@ -22,6 +22,7 @@ const NAV = [
   { href: "/admin/deletions", label: "Hesap Silme Kuyruğu", icon: Trash2 },
   { href: "/admin/users", label: "Kullanıcılar", icon: UserCog },
   { href: "/admin/scraping", label: "Yargıtay Scraping", icon: Database },
+  { href: "/admin/ai-cost", label: "AI Maliyet", icon: Database },
 ];
 
 export function AdminShell({

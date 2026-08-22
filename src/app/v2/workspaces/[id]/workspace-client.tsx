@@ -247,6 +247,7 @@ export function WorkspaceClient({
         throw new Error(`Orkestra başlatılamadı (${res.status})`);
       }
       await consumeSSE(res.body);
+      await refreshPetitionFromServer();
     } catch (err) {
       console.error(err);
       setOrchestraStatus("error");
@@ -311,6 +312,20 @@ export function WorkspaceClient({
         ]);
         break;
       case "agent_done":
+        if (
+          event.agentId === "dilekce_editoru" &&
+          typeof event.content === "string" &&
+          event.content.length > 80
+        ) {
+          console.log(
+            `[CANVAS] dilekce_editoru agent_done · ${event.content.length} chars`
+          );
+          setPetition((p) => ({
+            version: p?.version ?? 1,
+            markdown: event.content as string,
+            quality: p?.quality,
+          }));
+        }
         setAgentOutputs((prev) =>
           prev.map((o) =>
             o.agentId === event.agentId && o.round === event.round
@@ -406,14 +421,37 @@ export function WorkspaceClient({
     );
     setOpenCheckpointId(null);
     setOrchestraStatus("running");
-    await fetch(
-      `/api/v2/workspaces/${workspaceId}/orchestrate/resume`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ checkpointId, choice }),
+    setIsOrchestrating(true);
+    try {
+      const res = await fetch(
+        `/api/v2/workspaces/${workspaceId}/orchestrate/resume`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ checkpointId, choice }),
+        }
+      );
+      if (res.body) await consumeSSE(res.body);
+      await refreshPetitionFromServer();
+    } finally {
+      setIsOrchestrating(false);
+    }
+  };
+
+  const refreshPetitionFromServer = async () => {
+    try {
+      const res = await fetch(`/api/v2/workspaces/${workspaceId}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data.petition?.markdown) {
+        console.log(
+          `[CANVAS] sunucudan dilekçe yüklendi v${data.petition.version} · ${data.petition.markdown.length} chars`
+        );
+        setPetition(data.petition);
       }
-    );
+    } catch (e) {
+      console.warn("[CANVAS] yenileme hatası", e);
+    }
   };
 
   // ── Chat gönderme ────────────────────────────────────────
@@ -428,6 +466,8 @@ export function WorkspaceClient({
       "süreci başlat", "orkestra başla", "orkestrayı başlat",
       "start", "başlıyoruz", "hadi başla", "haydi başla",
       "3 tur başlat", "üç tur başlat", "analiz başla",
+      "işlemi başlat", "süreci başlayalım", "orkestra", "devam et",
+      "incelemeyi başlat", "dilekçe yaz", "dilekçeyi yaz",
     ];
     const isStartCommand = startCommands.some((cmd) =>
       trimmedLower === cmd || trimmedLower.startsWith(cmd + " ") || trimmedLower.startsWith(cmd + "!")
@@ -690,6 +730,8 @@ export function WorkspaceClient({
             showInternalDialogs: workspace.preferences?.showInternalDialogs ?? false,
             showRawResponses: workspace.preferences?.showRawResponses ?? false,
             enabledAgents: workspace.preferences?.enabledAgents ?? [],
+            court: workspace.preferences?.court ?? "",
+            esasNo: workspace.preferences?.esasNo ?? "",
           }}
           onSave={async (newPrefs) => {
             await fetch(`/api/v2/workspaces/${workspaceId}`, {

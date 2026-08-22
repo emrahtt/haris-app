@@ -1,12 +1,14 @@
 import Link from "next/link";
 import { getCurrentUserId } from "@/lib/v2/workspace/auth";
 import { getUserAnalytics } from "@/lib/v2/analytics/stats";
+import { assertWithinBudget } from "@/lib/v2/billing/quota";
 
 export const dynamic = "force-dynamic";
 
 export default async function AnalyticsPage() {
   const userId = await getCurrentUserId();
   const s = await getUserAnalytics(userId);
+  const budget = await assertWithinBudget(userId);
   const maxCost = Math.max(...s.byAgent.map((a) => a.cost), 0.0001);
 
   return (
@@ -28,6 +30,15 @@ export default async function AnalyticsPage() {
           ← Matter listesi
         </Link>
       </div>
+
+      {budget.used / budget.limit > 0.7 && (
+        <div className="mb-4 p-3 rounded-lg border border-amber-500/30 bg-amber-500/10 text-sm text-amber-100">
+          Aylık kota: ${budget.used.toFixed(2)} / ${budget.limit}.{" "}
+          {budget.ok
+            ? "Limit yaklaştı."
+            : "Kota doldu — orkestra yeni iş başlatmaz."}
+        </div>
+      )}
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-8">
         <Stat label="Dosya" value={String(s.workspaceCount)} />

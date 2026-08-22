@@ -24,6 +24,8 @@ interface Preferences {
   showInternalDialogs: boolean;
   showRawResponses: boolean;
   enabledAgents: AgentId[];
+  court?: string;
+  esasNo?: string;
 }
 
 interface Props {
@@ -131,6 +133,27 @@ export function WorkspaceSettingsPanel({
             ✕
           </button>
         </div>
+
+        <Section title="Mahkeme / Esas" hint="V1 aktarımında da gider">
+          <div className="grid grid-cols-2 gap-2">
+            <input
+              value={prefs.court ?? ""}
+              onChange={(e) =>
+                setPrefs((p) => ({ ...p, court: e.target.value }))
+              }
+              placeholder="Örn. İstanbul 4. Asliye Hukuk"
+              className="px-3 py-2 rounded bg-white/[0.03] border border-white/10 text-sm"
+            />
+            <input
+              value={prefs.esasNo ?? ""}
+              onChange={(e) =>
+                setPrefs((p) => ({ ...p, esasNo: e.target.value }))
+              }
+              placeholder="Esas no: 2025/123"
+              className="px-3 py-2 rounded bg-white/[0.03] border border-white/10 text-sm"
+            />
+          </div>
+        </Section>
 
         {/* ── Dilekçe Uzunluğu (kullanıcı isteği) ────────────── */}
         <Section title="Dilekçe Uzunluğu" hint="Kalite Gate ile garantili">

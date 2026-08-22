@@ -94,6 +94,9 @@ export interface UserPreferences {
   showInternalDialogs: boolean;
   showRawResponses: boolean;
   enabledAgents: AgentId[];
+  /** V2 Matter'da mahkeme / esas — V1'e aktarılır */
+  court?: string;
+  esasNo?: string;
 }
 
 /** LangGraph Annotation — tüm node'lar bu state üzerinde çalışır */

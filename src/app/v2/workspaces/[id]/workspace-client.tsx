@@ -724,7 +724,21 @@ export function WorkspaceClient({
         }
         chat={<OrchestratorChat messages={messages} onSend={handleSend} onClearHistory={handleClearHistory} workspaceId={workspaceId} isSending={isSending} />}
         internalDialogs={internalDialogsContent}
+        matterRail={
+          <OrchestraRail
+            workspaceId={workspaceId}
+            orchestraStatus={orchestraStatus}
+            isOrchestrating={isOrchestrating}
+            documentsCount={documents.length}
+            onStart={startOrchestration}
+            onTabular={() => setShowTabular(true)}
+            onShare={() => setShowShare(true)}
+            onSettings={() => setShowSettings(true)}
+          />
+        }
       />
+
+      <HelpTips />
 
       {/* Settings modal */}
       {showSettings && (

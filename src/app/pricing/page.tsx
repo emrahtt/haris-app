@@ -7,6 +7,7 @@ import { Logo } from "@/components/ui/logo";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/components/ui/toast-provider";
 import { getPlanList, formatPriceTRY, type PlanId } from "@/lib/billing/plans";
+import { CREDIT_PACKS } from "@/lib/billing/credits";
 import { Check, ArrowRight, Sparkles, Star, Building2 } from "lucide-react";
 
 export default function PricingPage() {
@@ -233,6 +234,18 @@ export default function PricingPage() {
           })}
         </div>
 
+        <div className="max-w-5xl mx-auto mt-16">
+          <h2 className="font-serif text-2xl text-center mb-3">
+            Ek AI paketi
+          </h2>
+          <p className="text-center text-[var(--color-text-2)] text-sm mb-6 max-w-2xl mx-auto">
+            Plan kotanız bittiğinde paket alın. Yükleme yalnızca sizin
+            hesabınıza yazılır; başka kullanıcı sizin API bakiyenizi
+            tüketemez.
+          </p>
+          <CreditPacks />
+        </div>
+
         {/* SSS */}
         <div className="max-w-3xl mx-auto mt-20">
           <h2 className="font-serif text-2xl text-center mb-8">Sık Sorulanlar</h2>
@@ -276,5 +289,55 @@ export default function PricingPage() {
         </div>
       </section>
     </main>
+  );
+}
+
+function CreditPacks() {
+  const [loading, setLoading] = useState<string | null>(null);
+  const toast = useToast();
+
+  async function buy(packId: string) {
+    setLoading(packId);
+    try {
+      const res = await fetch("/api/billing/checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ packId }),
+      });
+      const data = await res.json();
+      if (data.url) window.location.href = data.url;
+      else toast(data.error || "Paket başlatılamadı");
+    } catch (e) {
+      toast(String(e));
+    } finally {
+      setLoading(null);
+    }
+  }
+
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      {Object.values(CREDIT_PACKS).map((p) => (
+        <div
+          key={p.id}
+          className="rounded-xl border border-[var(--color-line)] bg-[var(--color-bg-1)] p-5"
+        >
+          <div className="text-sm text-[var(--color-text-3)]">{p.name}</div>
+          <div className="font-serif text-2xl text-[var(--color-gold-bright)] mt-1">
+            {p.calls} işlem
+          </div>
+          <div className="text-sm text-[var(--color-text-2)] mt-1 mb-4">
+            {formatPriceTRY(p.priceTry)}
+          </div>
+          <button
+            type="button"
+            disabled={loading === p.id}
+            onClick={() => buy(p.id)}
+            className="w-full py-2 rounded-lg bg-[#C9A961] text-[#0A1628] text-sm font-semibold disabled:opacity-50"
+          >
+            {loading === p.id ? "…" : "Satın al"}
+          </button>
+        </div>
+      ))}
+    </div>
   );
 }

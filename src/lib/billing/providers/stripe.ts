@@ -11,6 +11,7 @@
 import Stripe from "stripe";
 import { billingConfig } from "../config";
 import { PLANS, type PlanId } from "../plans";
+import { CREDIT_PACKS, type CreditPackId } from "../credits";
 import type {
   CheckoutInput,
   CheckoutResult,
@@ -70,17 +71,43 @@ export class StripeProvider implements PaymentProviderAdapter {
         ? plan.stripeYearlyPriceId
         : plan.stripeMonthlyPriceId;
 
-    if (!priceId) {
-      throw new Error(
-        `Stripe Price ID tanımlı değil: ${plan.id} ${input.billingPeriod}. ` +
-          `Dashboard'dan oluştur ve plans.ts'a ekle.`
-      );
-    }
+    const amountUsd =
+      input.billingPeriod === "yearly"
+        ? plan.priceYearlyUSD
+        : plan.priceMonthlyUSD;
+    const amountTry =
+      input.billingPeriod === "yearly"
+        ? plan.priceYearlyTRY
+        : plan.priceMonthlyTRY;
+    const currency = (billingConfig.defaultCurrency || "try").toLowerCase();
+    const unitAmount =
+      currency === "usd"
+        ? Math.round(amountUsd * 100)
+        : Math.round(amountTry * 100);
+
+    const lineItems: Stripe.Checkout.SessionCreateParams.LineItem[] = priceId
+      ? [{ price: priceId, quantity: 1 }]
+      : [
+          {
+            quantity: 1,
+            price_data: {
+              currency,
+              unit_amount: unitAmount,
+              recurring: {
+                interval: input.billingPeriod === "yearly" ? "year" : "month",
+              },
+              product_data: {
+                name: `HARIS ${plan.displayName}`,
+                description: plan.description,
+              },
+            },
+          },
+        ];
 
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
       payment_method_types: ["card"],
-      line_items: [{ price: priceId, quantity: 1 }],
+      line_items: lineItems,
       success_url: `${input.successUrl}?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: input.cancelUrl,
       customer_email: input.userEmail,
@@ -174,6 +201,51 @@ export class StripeProvider implements PaymentProviderAdapter {
       };
     }
 
+    if (event.type === "checkout.session.completed") {
+      const session = event.data.object as Stripe.Checkout.Session;
+      const kind = session.metadata?.kind;
+      if (kind === "credits") {
+        return {
+          provider: "stripe",
+          eventId: event.id,
+          type: "credits.purchased",
+          userId:
+            session.metadata?.userId ||
+            session.client_reference_id ||
+            undefined,
+          amountCents: session.amount_total ?? undefined,
+          currency: session.currency?.toUpperCase(),
+          creditPackId: session.metadata?.packId,
+          creditCalls: session.metadata?.calls
+            ? Number(session.metadata.calls)
+            : undefined,
+          raw: event,
+        };
+      }
+      if (session.mode === "subscription") {
+        return {
+          provider: "stripe",
+          eventId: event.id,
+          type: "subscription.created",
+          userId:
+            session.metadata?.userId ||
+            session.client_reference_id ||
+            undefined,
+          planId: session.metadata?.planId as PlanId | undefined,
+          billingPeriod: session.metadata?.billingPeriod as
+            | "monthly"
+            | "yearly"
+            | undefined,
+          customerId:
+            typeof session.customer === "string"
+              ? session.customer
+              : session.customer?.id,
+          status: "active",
+          raw: event,
+        };
+      }
+    }
+
     // Invoice events
     if (event.type === "invoice.paid" || event.type === "invoice.payment_failed") {
       const inv = event.data.object as Stripe.Invoice;
@@ -204,5 +276,49 @@ export class StripeProvider implements PaymentProviderAdapter {
       type: "unknown",
       raw: event,
     };
+  }
+
+  async createCreditCheckout(input: {
+    packId: CreditPackId;
+    userId: string;
+    userEmail: string;
+    successUrl: string;
+    cancelUrl: string;
+  }): Promise<CheckoutResult> {
+    const stripe = getStripe();
+    const pack = CREDIT_PACKS[input.packId];
+    const currency = (billingConfig.defaultCurrency || "try").toLowerCase();
+    const unitAmount =
+      currency === "usd" ? pack.priceUsdCents : pack.priceTry * 100;
+
+    const session = await stripe.checkout.sessions.create({
+      mode: "payment",
+      payment_method_types: ["card"],
+      customer_email: input.userEmail,
+      client_reference_id: input.userId,
+      success_url: `${input.successUrl}?credits=ok`,
+      cancel_url: input.cancelUrl,
+      metadata: {
+        kind: "credits",
+        userId: input.userId,
+        packId: pack.id,
+        calls: String(pack.calls),
+      },
+      line_items: [
+        {
+          quantity: 1,
+          price_data: {
+            currency,
+            unit_amount: unitAmount,
+            product_data: {
+              name: `HARIS ${pack.name} — ${pack.calls} AI işlem`,
+              description: "Yalnızca satın alan hesabın kotasına eklenir.",
+            },
+          },
+        },
+      ],
+    });
+    if (!session.url) throw new Error("Stripe paket URL'i üretilemedi");
+    return { url: session.url, sessionId: session.id };
   }
 }

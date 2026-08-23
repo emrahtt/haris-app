@@ -33,7 +33,12 @@ export interface OrchestraContext {
     qualityMode: "strict" | "flexible";
     checkpointMode: "always_ask" | "ask_on_conflict" | "auto_continue";
     enabledAgents: AgentId[];
+    court?: string;
+    esasNo?: string;
   };
+  /** 2 veya 3: checkpoint sonrası TUR 2/3'ten devam */
+  resumeFromRound?: 1 | 2 | 3;
+  priorOutputs?: Record<AgentId, string>;
 }
 
 export type StreamEvent =
@@ -142,10 +147,22 @@ export async function runOrchestra(
   });
 
   const documentContext = buildDocumentContext(ctx.documents);
+  const startRound = ctx.resumeFromRound ?? 1;
+  const round1Outputs: Record<AgentId, string> = {
+    ...(ctx.priorOutputs ?? {}),
+  } as Record<AgentId, string>;
+
+  if (startRound > 1) {
+    emit({
+      type: "orchestrator_message",
+      content: `Checkpoint kararı alındı. TUR ${startRound}'den devam ediyorum.`,
+    });
+  }
 
   // ─────────────────────────────────────────────────────
   // TUR 1 — Bağımsız paralel inceleme
   // ─────────────────────────────────────────────────────
+  if (startRound <= 1) {
   emit({ type: "round_start", round: 1 });
 
   emit({
@@ -157,7 +174,6 @@ export async function runOrchestra(
     messageType: "directive",
   });
 
-  const round1Outputs: Record<AgentId, string> = {} as Record<AgentId, string>;
   const round1Promises = analyzers.map(async (agentId) => {
     emit({ type: "agent_start", agentId, round: 1 });
     try {
@@ -286,14 +302,19 @@ export async function runOrchestra(
         },
       },
     });
-    // NOT: Gerçek pause için resume endpoint'i kullanılacak;
-    // şu an mock akış (resume sonrası TUR 2 devam).
-    // Sprint 11.5'te LangGraph interrupt() ile gerçek pause.
+    emit({
+      type: "orchestrator_message",
+      content:
+        "TUR 1 bitti. Seçiminizi yaptıktan sonra TUR 2 ve dilekçe sentezi devam edecek.",
+    });
+    return;
   }
+  } // startRound <= 1
 
   // ─────────────────────────────────────────────────────
   // TUR 2 — Çapraz inceleme
   // ─────────────────────────────────────────────────────
+  if (startRound <= 2) {
   emit({ type: "round_start", round: 2 });
   emit({
     type: "agent_message",
@@ -356,6 +377,7 @@ export async function runOrchestra(
       });
     }
   }
+  } // startRound <= 2
 
   // ─────────────────────────────────────────────────────
   // TUR 3 — Sentez + Dilekçe taslağı + Kalite Gate

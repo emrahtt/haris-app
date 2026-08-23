@@ -3,6 +3,8 @@ import { z } from "zod";
 import { getProvider } from "@/lib/billing/registry";
 import { activeProvider, billingConfig } from "@/lib/billing/config";
 import { upsertSubscription } from "@/lib/billing/subscriptions-db";
+import { addBonusCalls, CREDIT_PACKS } from "@/lib/billing/credits";
+import { StripeProvider } from "@/lib/billing/providers/stripe";
 import { createClient } from "@/lib/supabase/server";
 import { isDemoMode, DEMO_USER } from "@/lib/supabase/config";
 
@@ -10,8 +12,9 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const RequestSchema = z.object({
-  planId: z.enum(["starter", "pro", "enterprise"]),
-  billingPeriod: z.enum(["monthly", "yearly"]),
+  planId: z.enum(["starter", "pro", "enterprise"]).optional(),
+  billingPeriod: z.enum(["monthly", "yearly"]).optional(),
+  packId: z.enum(["pack_s", "pack_m", "pack_l"]).optional(),
 });
 
 /**
@@ -55,6 +58,35 @@ export async function POST(req: NextRequest) {
       }
       userId = user.id;
       userEmail = user.email || "";
+    }
+
+    if (parsed.data.packId) {
+      const pack = CREDIT_PACKS[parsed.data.packId];
+      if (activeProvider() === "demo") {
+        const next = await addBonusCalls(userId, pack.calls);
+        return NextResponse.json({
+          url: `${billingConfig.appUrl}/settings?credits=demo`,
+          demo: true,
+          bonusCalls: next,
+        });
+      }
+      const stripe = new StripeProvider();
+      const result = await stripe.createCreditCheckout({
+        packId: parsed.data.packId,
+        userId,
+        userEmail,
+        successUrl: `${billingConfig.appUrl}/settings`,
+        cancelUrl: `${billingConfig.appUrl}/pricing?upgrade=cancelled`,
+      });
+      return NextResponse.json({
+        url: result.url,
+        sessionId: result.sessionId,
+        provider: "stripe",
+      });
+    }
+
+    if (!parsed.data.planId || !parsed.data.billingPeriod) {
+      return NextResponse.json({ error: "planId veya packId gerekli" }, { status: 400 });
     }
 
     if (parsed.data.planId === "enterprise") {

@@ -15,9 +15,13 @@ export default async function OverviewPage({
     <div className="grid grid-cols-1 lg:grid-cols-[2fr_1fr] gap-4.5">
       <Card>
         <h3 className="font-serif text-[var(--color-gold-bright)] mb-3.5">Olay Özeti</h3>
-        <p className="text-[var(--color-text-2)] leading-7 text-[13.5px] mb-3">
+        <p className="text-[var(--color-text-2)] leading-7 text-[13.5px] mb-3 whitespace-pre-wrap">
           {c.summary ||
-            "Bu dava için henüz detaylı bir özet AI tarafından üretilmemiş. 'Derin Analiz' sekmesinden başlatabilirsiniz."}
+            "Bu dava için henüz detaylı bir özet yok. V2 Matter'dan «V1'e Aktar» ile sohbet, belgeler ve dilekçe buraya kopyalanır. Mahkeme / esas bilgisi V1 üst başlıktan düzenlenir."}
+        </p>
+        <p className="text-[11px] text-[var(--color-text-3)]">
+          Mahkeme: {c.court || "seçilmedi"} · Esas: {c.esasNo || "—"} · Tür:{" "}
+          {c.caseType}
         </p>
         {c.maddi && c.manevi && (
           <>

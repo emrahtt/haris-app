@@ -55,6 +55,8 @@ export default function NewWorkspacePage() {
   const [quickStartId, setQuickStartId] = useState<string | null>(null);
   const [isCreating, setIsCreating] = useState(false);
   const [title, setTitle] = useState("");
+  const [court, setCourt] = useState("");
+  const [esasNo, setEsasNo] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState<string | null>(null);
 
@@ -99,6 +101,7 @@ export default function NewWorkspacePage() {
         body: JSON.stringify({
           title: title || `Yeni Dava (${new Date().toLocaleDateString("tr-TR")})`,
           case_type: caseType,
+          preferences: { court, esasNo },
         }),
       });
       if (!resCreate.ok) {
@@ -159,6 +162,31 @@ export default function NewWorkspacePage() {
           placeholder="Örn. Trafik Kazası Tazminat — Yılmaz vs. Aksigorta"
           className="w-full px-4 py-3 rounded-lg bg-white/[0.03] border border-white/10 focus:border-[#C9A961]/50 focus:outline-none focus:ring-1 focus:ring-[#C9A961]/30 text-slate-100 placeholder:text-slate-500"
         />
+      </div>
+
+      <div className="mb-6 grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div>
+          <label className="block text-xs uppercase tracking-widest text-slate-500 mb-2">
+            Mahkeme
+          </label>
+          <input
+            value={court}
+            onChange={(e) => setCourt(e.target.value)}
+            placeholder="Örn. İstanbul 4. Asliye Hukuk"
+            className="w-full px-4 py-3 rounded-lg bg-white/[0.03] border border-white/10 text-slate-100 placeholder:text-slate-500"
+          />
+        </div>
+        <div>
+          <label className="block text-xs uppercase tracking-widest text-slate-500 mb-2">
+            Esas No
+          </label>
+          <input
+            value={esasNo}
+            onChange={(e) => setEsasNo(e.target.value)}
+            placeholder="2025/1234"
+            className="w-full px-4 py-3 rounded-lg bg-white/[0.03] border border-white/10 text-slate-100 placeholder:text-slate-500"
+          />
+        </div>
       </div>
 
       <div className="mb-6">

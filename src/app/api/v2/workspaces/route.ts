@@ -29,10 +29,21 @@ export async function POST(req: NextRequest) {
   try {
     const userId = await getCurrentUserId();
     const body = await req.json().catch(() => ({}));
+    const prefs = body.preferences ?? {};
     const ws = await createWorkspace(userId, {
       title: body.title || "Yeni Dava Dosyası",
       case_description: body.case_description ?? "",
       case_type: body.case_type ?? "",
+      preferences: {
+        petitionLength: "standard",
+        qualityMode: "strict",
+        checkpointMode: "ask_on_conflict",
+        showInternalDialogs: false,
+        showRawResponses: false,
+        enabledAgents: [],
+        court: prefs.court ?? "",
+        esasNo: prefs.esasNo ?? "",
+      },
     });
     return NextResponse.json({ workspace: ws }, { status: 201 });
   } catch (e) {

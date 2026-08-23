@@ -1,7 +1,7 @@
 "use client";
 
 import { uuid } from "@/lib/v2/utils/uuid";
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useRef } from "react";
 import { ThreePanelLayout } from "@/components/v2/layout/three-panel-layout";
 import { VaultPanel } from "@/components/v2/vault/vault-panel";
 import { WorkflowViewer } from "@/components/v2/workflow/workflow-viewer";
@@ -13,7 +13,8 @@ import { WorkspaceSettingsPanel } from "@/components/v2/settings/workspace-setti
 import { MethodPicker, type ExtractionMethod } from "@/components/v2/vault/method-picker";
 import { TabularReviewView } from "@/components/v2/tabular/tabular-review-view";
 import { SharePanel } from "@/components/v2/sharing/share-panel";
-import { V1Bridge } from "@/components/v2/layout/v1-bridge";
+import { OrchestraRail } from "@/components/v2/layout/orchestra-rail";
+import { HelpTips } from "@/components/v2/layout/help-tips";
 import type {
   VaultDocument,
   AgentOutput,
@@ -246,6 +247,7 @@ export function WorkspaceClient({
         throw new Error(`Orkestra başlatılamadı (${res.status})`);
       }
       await consumeSSE(res.body);
+      await refreshPetitionFromServer();
     } catch (err) {
       console.error(err);
       setOrchestraStatus("error");
@@ -261,7 +263,10 @@ export function WorkspaceClient({
 
     while (true) {
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done) {
+        console.log("[SSE] stream tamamlandı", new Date().toISOString());
+        break;
+      }
       buffer += decoder.decode(value, { stream: true });
       const events = buffer.split("\n\n");
       buffer = events.pop() ?? "";
@@ -307,6 +312,20 @@ export function WorkspaceClient({
         ]);
         break;
       case "agent_done":
+        if (
+          event.agentId === "dilekce_editoru" &&
+          typeof event.content === "string" &&
+          event.content.length > 80
+        ) {
+          console.log(
+            `[CANVAS] dilekce_editoru agent_done · ${event.content.length} chars`
+          );
+          setPetition((p) => ({
+            version: p?.version ?? 1,
+            markdown: event.content as string,
+            quality: p?.quality,
+          }));
+        }
         setAgentOutputs((prev) =>
           prev.map((o) =>
             o.agentId === event.agentId && o.round === event.round
@@ -345,13 +364,21 @@ export function WorkspaceClient({
         setOpenCheckpointId((event.checkpoint as UserCheckpoint).id);
         setOrchestraStatus("paused_for_user");
         break;
-      case "petition_draft":
+      case "petition_draft": {
+        const md = event.markdown as string;
+        console.log(
+          `[SSE petition_draft] v${event.version} · ${md?.length ?? 0} chars`
+        );
+        console.log(
+          `[CANVAS] petition_draft v${event.version} alındı`
+        );
         setPetition({
           version: event.version as number,
-          markdown: event.markdown as string,
+          markdown: md,
           quality: event.quality,
         });
         break;
+      }
       case "orchestrator_message":
         if (typeof window !== "undefined") {
           window.dispatchEvent(new CustomEvent("haris:memory-refresh"));
@@ -394,14 +421,37 @@ export function WorkspaceClient({
     );
     setOpenCheckpointId(null);
     setOrchestraStatus("running");
-    await fetch(
-      `/api/v2/workspaces/${workspaceId}/orchestrate/resume`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ checkpointId, choice }),
+    setIsOrchestrating(true);
+    try {
+      const res = await fetch(
+        `/api/v2/workspaces/${workspaceId}/orchestrate/resume`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ checkpointId, choice }),
+        }
+      );
+      if (res.body) await consumeSSE(res.body);
+      await refreshPetitionFromServer();
+    } finally {
+      setIsOrchestrating(false);
+    }
+  };
+
+  const refreshPetitionFromServer = async () => {
+    try {
+      const res = await fetch(`/api/v2/workspaces/${workspaceId}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data.petition?.markdown) {
+        console.log(
+          `[CANVAS] sunucudan dilekçe yüklendi v${data.petition.version} · ${data.petition.markdown.length} chars`
+        );
+        setPetition(data.petition);
       }
-    );
+    } catch (e) {
+      console.warn("[CANVAS] yenileme hatası", e);
+    }
   };
 
   // ── Chat gönderme ────────────────────────────────────────
@@ -416,6 +466,8 @@ export function WorkspaceClient({
       "süreci başlat", "orkestra başla", "orkestrayı başlat",
       "start", "başlıyoruz", "hadi başla", "haydi başla",
       "3 tur başlat", "üç tur başlat", "analiz başla",
+      "işlemi başlat", "süreci başlayalım", "orkestra", "devam et",
+      "incelemeyi başlat", "dilekçe yaz", "dilekçeyi yaz",
     ];
     const isStartCommand = startCommands.some((cmd) =>
       trimmedLower === cmd || trimmedLower.startsWith(cmd + " ") || trimmedLower.startsWith(cmd + "!")
@@ -598,6 +650,12 @@ export function WorkspaceClient({
           <h2 className="text-sm font-semibold truncate max-w-md">
             {workspace.title}
           </h2>
+          <span className="text-[11px] text-slate-500 truncate max-w-xs">
+            {workspace.preferences?.court || "Mahkeme seçilmedi"}
+            {workspace.preferences?.esasNo
+              ? ` · ${workspace.preferences.esasNo}`
+              : ""}
+          </span>
           {orchestraStatus === "running" ? (
             <span className="inline-flex items-center gap-1.5 text-[10px] uppercase tracking-widest text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 rounded-full px-2 py-0.5">
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
@@ -622,57 +680,6 @@ export function WorkspaceClient({
             </span>
           )}
         </div>
-        <button
-          onClick={startOrchestration}
-          disabled={
-            isOrchestrating ||
-            orchestraStatus === "running" ||
-            documents.length === 0
-          }
-          className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition ${
-            !isOrchestrating &&
-            orchestraStatus !== "running" &&
-            documents.length > 0
-              ? "bg-[#C9A961] text-[#0A1628] hover:bg-[#e6c479]"
-              : "bg-white/5 text-slate-500 cursor-not-allowed"
-          }`}
-        >
-          {orchestraStatus === "running" ? (
-            <span className="inline-flex items-center gap-2">
-              <span className="w-3.5 h-3.5 border-2 border-slate-400/40 border-t-slate-100 rounded-full animate-spin" />
-              Çalışıyor…
-            </span>
-          ) : orchestraStatus === "completed" ? (
-            "Yeniden Başlat"
-          ) : (
-            "🎼 Süreci Başlat"
-          )}
-        </button>
-        <button
-          onClick={() => setShowTabular(true)}
-          className="ml-2 px-3 py-1.5 rounded-lg text-sm border border-white/10 hover:bg-white/5 text-slate-300"
-          title="Belge Matrisi (Tabular Review)"
-          disabled={documents.length === 0}
-        >
-          📊
-        </button>
-        <button
-          onClick={() => setShowShare(true)}
-          className="ml-1 px-3 py-1.5 rounded-lg text-sm border border-white/10 hover:bg-white/5 text-slate-300"
-          title="Paylaş"
-        >
-          🤝
-        </button>
-        <div className="ml-1">
-          <V1Bridge workspaceId={workspaceId} />
-        </div>
-        <button
-          onClick={() => setShowSettings(true)}
-          className="ml-1 px-3 py-1.5 rounded-lg text-sm border border-white/10 hover:bg-white/5 text-slate-300"
-          title="Workspace ayarları"
-        >
-          ⚙️
-        </button>
       </div>
 
       <ThreePanelLayout
@@ -709,15 +716,29 @@ export function WorkspaceClient({
               }
               emptyHint={
                 documents.length === 0
-                  ? "Sol panelden belge ekleyin, sonra üst bardaki '🎼 Süreci Başlat' düğmesine basın."
-                  : "Orkestra Şefi sürec başlatıldığında dilekçe taslağı burada belirecek."
+                  ? "Sol panelden belge ekleyin, sonra Matter panelinin solundaki dikey 'İşlemi Başlat' çubuğuna basın."
+                  : "Orkestra Şefi süreç başlatıldığında dilekçe taslağı burada belirecek."
               }
             />
           )
         }
         chat={<OrchestratorChat messages={messages} onSend={handleSend} onClearHistory={handleClearHistory} workspaceId={workspaceId} isSending={isSending} />}
         internalDialogs={internalDialogsContent}
+        matterRail={
+          <OrchestraRail
+            workspaceId={workspaceId}
+            orchestraStatus={orchestraStatus}
+            isOrchestrating={isOrchestrating}
+            documentsCount={documents.length}
+            onStart={startOrchestration}
+            onTabular={() => setShowTabular(true)}
+            onShare={() => setShowShare(true)}
+            onSettings={() => setShowSettings(true)}
+          />
+        }
       />
+
+      <HelpTips />
 
       {/* Settings modal */}
       {showSettings && (
@@ -729,6 +750,8 @@ export function WorkspaceClient({
             showInternalDialogs: workspace.preferences?.showInternalDialogs ?? false,
             showRawResponses: workspace.preferences?.showRawResponses ?? false,
             enabledAgents: workspace.preferences?.enabledAgents ?? [],
+            court: workspace.preferences?.court ?? "",
+            esasNo: workspace.preferences?.esasNo ?? "",
           }}
           onSave={async (newPrefs) => {
             await fetch(`/api/v2/workspaces/${workspaceId}`, {

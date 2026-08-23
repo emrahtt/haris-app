@@ -38,9 +38,10 @@ const V1_LINKS = [
 
 interface Props {
   workspaceId?: string;
+  vertical?: boolean;
 }
 
-export function V1Bridge({ workspaceId }: Props) {
+export function V1Bridge({ workspaceId, vertical }: Props) {
   const [open, setOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [exportResult, setExportResult] = useState<{

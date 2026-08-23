@@ -22,9 +22,10 @@ import {
 } from "@/lib/v2/orchestra/engine";
 import { AGENTS } from "@/lib/v2/orchestra/agents";
 import { MODEL_REGISTRY } from "@/lib/v2/providers";
+import { consumeAiCall, assertUserCanUseAi } from "@/lib/billing/gate";
 
 export const runtime = "nodejs";
-export const maxDuration = 300; // 5 dakika
+export const maxDuration = 300;
 
 export async function POST(
   _req: NextRequest,
@@ -39,6 +40,14 @@ export async function POST(
       headers: { "Content-Type": "application/json" },
     });
   }
+  const quota = await assertUserCanUseAi(userId, 4);
+  if (!quota.allowed) {
+    return new Response(JSON.stringify({ error: quota.reason, quota }), {
+      status: 402,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
   const documents = await listDocuments(id);
 
   await updateWorkspace(id, userId, {
@@ -49,12 +58,32 @@ export async function POST(
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
-      const emit = (event: StreamEvent) => {
+      let closed = false;
+      const heartbeat = setInterval(() => {
+        if (closed) return;
         try {
+          controller.enqueue(encoder.encode(`: keepalive ${Date.now()}\n\n`));
+        } catch {
+          /* stream kapandı */
+        }
+      }, 15_000);
+
+      let lastType = "";
+      const emit = (event: StreamEvent) => {
+        lastType = event.type;
+        try {
+          if (event.type === "petition_draft") {
+            console.log(
+              `[SSE→] petition_draft v${event.version} · ${event.markdown?.length ?? 0} chars`
+            );
+          } else {
+            console.log(`[SSE→] ${event.type}`);
+          }
           const line = `data: ${JSON.stringify(event)}\n\n`;
           controller.enqueue(encoder.encode(line));
-          // Side-effect: DB persist
-          void persistEvent(id, userId, event).catch(() => {});
+          void persistEvent(id, userId, event).catch((err) =>
+            console.error("[SSE persist]", err)
+          );
         } catch (e) {
           console.error("[SSE emit hatası]", e);
         }
@@ -67,7 +96,13 @@ export async function POST(
             userId,
             caseTitle: ws.title,
             caseType: ws.case_type,
-            caseDescription: ws.case_description,
+            caseDescription: [
+              ws.case_description,
+              ws.preferences?.court ? `Mahkeme: ${ws.preferences.court}` : "",
+              ws.preferences?.esasNo ? `Esas: ${ws.preferences.esasNo}` : "",
+            ]
+              .filter(Boolean)
+              .join("\n"),
             documents,
             preferences: {
               petitionLength:
@@ -76,13 +111,16 @@ export async function POST(
               checkpointMode:
                 ws.preferences?.checkpointMode ?? "ask_on_conflict",
               enabledAgents: ws.preferences?.enabledAgents ?? [],
+              court: ws.preferences?.court,
+              esasNo: ws.preferences?.esasNo,
             },
           },
           emit
         );
+        const finished = lastType === "completed";
         await updateWorkspace(id, userId, {
-          orchestration_status: "completed",
-          current_round: 3,
+          orchestration_status: finished ? "completed" : "paused_for_user",
+          current_round: finished ? 3 : 1,
         });
       } catch (e) {
         emit({ type: "error", message: String(e) });
@@ -90,6 +128,8 @@ export async function POST(
           orchestration_status: "error",
         });
       } finally {
+        closed = true;
+        clearInterval(heartbeat);
         controller.close();
       }
     },
@@ -134,6 +174,17 @@ async function persistEvent(
           systemPrompt: agent.systemPrompt,
         }
       );
+      await consumeAiCall(userId, 1);
+      const ws = await getWorkspace(workspaceId, userId);
+      if (ws) {
+        await updateWorkspace(workspaceId, userId, {
+          total_cost_usd: Number(ws.total_cost_usd ?? 0) + (event.cost ?? 0),
+          total_tokens_input:
+            Number(ws.total_tokens_input ?? 0) + (event.tokensUsed?.input ?? 0),
+          total_tokens_output:
+            Number(ws.total_tokens_output ?? 0) + (event.tokensUsed?.output ?? 0),
+        });
+      }
       break;
     }
     case "agent_message":

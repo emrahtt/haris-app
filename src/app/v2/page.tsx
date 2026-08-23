@@ -39,6 +39,12 @@ export default async function V2Home() {
           Her dava bir <em>workspace</em>. 12 uzman AI ajan, Orkestra Şefi
           koordinasyonunda, sizinle birlikte çalışır.
         </p>
+        <Link
+          href="/v2/analytics"
+          className="inline-block mt-3 text-sm text-[#C9A961] hover:underline"
+        >
+          Maliyet ve ajan paneli →
+        </Link>
       </div>
 
       <Link

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getProvider } from "@/lib/billing/registry";
 import { upsertSubscription } from "@/lib/billing/subscriptions-db";
+import { addBonusCalls } from "@/lib/billing/credits";
 import { createClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
@@ -62,6 +63,14 @@ export async function POST(req: NextRequest) {
         currentPeriodStart: event.currentPeriodStart,
         currentPeriodEnd: event.currentPeriodEnd,
       });
+    }
+
+    if (
+      event.type === "credits.purchased" &&
+      event.userId &&
+      event.creditCalls
+    ) {
+      await addBonusCalls(event.userId, event.creditCalls);
     }
 
     if (event.type === "subscription.cancelled" && event.userId) {

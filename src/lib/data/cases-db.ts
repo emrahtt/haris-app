@@ -240,6 +240,10 @@ function dbRowToCase(row: Record<string, unknown>): LegalCase {
     docs: 0, // sayım ayrı sorgu gerektirir
     aiAnalyzed: false,
     successProb: (row.success_prob as number) || 0,
-    summary: (row.summary as string) || undefined,
+    summary:
+      (row.summary as string) ||
+      (row.description as string) ||
+      (row.notes as string) ||
+      undefined,
   };
 }

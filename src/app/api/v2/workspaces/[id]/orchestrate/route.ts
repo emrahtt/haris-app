@@ -69,8 +69,10 @@ export async function POST(
       }, 15_000);
 
       let lastType = "";
+      let lastRound: 1 | 2 | 3 | undefined;
       const emit = (event: StreamEvent) => {
         lastType = event.type;
+        if (event.type === "round_start") lastRound = event.round;
         try {
           if (event.type === "petition_draft") {
             console.log(
@@ -120,7 +122,7 @@ export async function POST(
         const finished = lastType === "completed";
         await updateWorkspace(id, userId, {
           orchestration_status: finished ? "completed" : "paused_for_user",
-          current_round: finished ? 3 : 1,
+          current_round: finished ? 3 : (lastRound ?? 1),
         });
       } catch (e) {
         emit({ type: "error", message: String(e) });

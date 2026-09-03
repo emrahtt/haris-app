@@ -1,5 +1,16 @@
 /**
- * POST — Checkpoint sonrası TUR 2+3 SSE ile devam.
+ * POST — Checkpoint sonrası orkestraya kaldığı turdan devam.
+ *
+ * Kullanıcının checkpoint kararı:
+ *  - agent_message olarak kaydedilir,
+ *  - scratchpad'e yazılır (böylece TUR 3 sentezinde "kullanıcı yönlendirmesi"
+ *    olarak görünür),
+ *  - userGuidance olarak engine'e iletilir.
+ *
+ * Kaldığı tur otomatik hesaplanır:
+ *  - Hiç çıktı yoksa      → TUR 1
+ *  - Sadece TUR 1 varsa    → TUR 2
+ *  - TUR 2 çıktısı da varsa → TUR 3 (dilekçe sentezi)
  */
 
 import { uuid } from "@/lib/v2/utils/uuid";
@@ -14,10 +25,17 @@ import {
 } from "@/lib/v2/workspace/db";
 import { runOrchestra, type StreamEvent } from "@/lib/v2/orchestra/engine";
 import type { AgentId } from "@/lib/v2/orchestra/agents";
+import { writeToScratchpad } from "@/lib/v2/memory/db";
 import { assertUserCanUseAi } from "@/lib/billing/gate";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
+
+/** Kullanıcı "belge içeriği olmasa bile devam et" dediyse pre-flight'ı atla. */
+function isOverrideChoice(choice: string | undefined): boolean {
+  if (!choice) return false;
+  return /yine de devam/i.test(choice) || choice === "opt_override_unreadable";
+}
 
 export async function POST(
   req: NextRequest,
@@ -57,17 +75,43 @@ export async function POST(
     });
   }
 
+  // Kullanıcının kararını scratchpad'e yaz → TUR 3 sentezi bunu görecek
+  const guidance = choice && !isOverrideChoice(choice) ? choice : undefined;
+  if (guidance) {
+    try {
+      await writeToScratchpad(id, userId, {
+        writtenBy: "orchestrator",
+        roundNumber: 1,
+        topic: "checkpoint_kullanici_karari",
+        content: `Kullanıcı checkpoint kararı: ${guidance}`,
+        metadata: { checkpointId },
+      });
+    } catch (e) {
+      console.warn("[Resume scratchpad yazma hatası]", e);
+    }
+  }
+
   const [documents, outputs] = await Promise.all([
     listDocuments(id),
     listAgentOutputs(id),
   ]);
 
-  const priorOutputs = {} as Record<AgentId, string>;
+  // Tüm turların çıktılarını tur sırasına göre birleştir (TUR1 + TUR2 eleştirisi dahil)
+  const byAgent: Record<string, { round: number; content: string }[]> = {};
   for (const o of outputs) {
-    if (o.round === 1 && o.content) {
-      priorOutputs[o.agentId] = o.content;
+    if (o.content && o.round >= 1) {
+      (byAgent[o.agentId] ??= []).push({ round: o.round, content: o.content });
     }
   }
+  const priorOutputs = {} as Record<AgentId, string>;
+  for (const [agentId, arr] of Object.entries(byAgent)) {
+    arr.sort((a, b) => a.round - b.round);
+    priorOutputs[agentId as AgentId] = arr.map((x) => x.content).join("\n\n");
+  }
+
+  const hasRound2 = outputs.some((o) => o.round === 2 && o.content);
+  const hasAnyOutput = Object.keys(priorOutputs).length > 0;
+  const startRound = !hasAnyOutput ? 1 : hasRound2 ? 3 : 2;
 
   await updateWorkspace(id, userId, { orchestration_status: "running" });
 
@@ -75,8 +119,15 @@ export async function POST(
   const stream = new ReadableStream({
     async start(controller) {
       let lastType = "";
+      let lastRound: 1 | 2 | 3 | undefined;
       const emit = (event: StreamEvent) => {
         lastType = event.type;
+        if (event.type === "round_start") {
+          lastRound = event.round;
+          void updateWorkspace(id, userId, { current_round: event.round }).catch(
+            () => undefined
+          );
+        }
         controller.enqueue(
           encoder.encode(`data: ${JSON.stringify(event)}\n\n`)
         );
@@ -90,23 +141,28 @@ export async function POST(
             caseType: ws.case_type,
             caseDescription: ws.case_description,
             documents,
-            resumeFromRound: 2,
+            resumeFromRound: startRound,
             priorOutputs,
+            // Kullanıcının gerçek checkpoint modunu koru: "always_ask" seçmişse
+            // sonraki tur sonunda tekrar durup sorar.
             preferences: {
               petitionLength: ws.preferences?.petitionLength ?? "standard",
               qualityMode: ws.preferences?.qualityMode ?? "strict",
-              checkpointMode: "auto_continue",
+              checkpointMode:
+                ws.preferences?.checkpointMode ?? "ask_on_conflict",
               enabledAgents: ws.preferences?.enabledAgents ?? [],
               court: ws.preferences?.court,
               esasNo: ws.preferences?.esasNo,
             },
+            userGuidance: guidance,
+            forceContinue: isOverrideChoice(choice),
           },
           emit
         );
+        const finished = lastType === "completed";
         await updateWorkspace(id, userId, {
-          orchestration_status:
-            lastType === "completed" ? "completed" : "paused_for_user",
-          current_round: lastType === "completed" ? 3 : 2,
+          orchestration_status: finished ? "completed" : "paused_for_user",
+          current_round: finished ? 3 : (lastRound ?? startRound),
         });
       } catch (e) {
         emit({ type: "error", message: String(e) });

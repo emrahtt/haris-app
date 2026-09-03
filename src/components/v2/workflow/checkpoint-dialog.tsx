@@ -21,6 +21,12 @@ export function CheckpointDialog({ checkpoint, onResolve, onClose }: Props) {
   const [remaining, setRemaining] = useState(checkpoint.timeoutMs / 1000);
   const [autoApply, setAutoApply] = useState(false);
 
+  // Seçenek id'si yerine ETİKETİNİ göndeririz; böylece engine kullanıcının
+  // kararını "yönlendirme" olarak TUR 3 sentezine işleyebilir.
+  const optionLabel = (optionId: string) =>
+    checkpoint.conflict?.options.find((o) => o.id === optionId)?.label ??
+    optionId;
+
   // Timeout countdown (Karar 4: hibrit mod default opsiyonel)
   useEffect(() => {
     if (checkpoint.timeoutMs <= 0) return;
@@ -34,7 +40,7 @@ export function CheckpointDialog({ checkpoint, onResolve, onClose }: Props) {
             o.recommendedBy
           );
           if (recommended) {
-            setTimeout(() => onResolve(recommended.id), 800);
+            setTimeout(() => onResolve(optionLabel(recommended.id)), 800);
           }
           return 0;
         }
@@ -42,6 +48,7 @@ export function CheckpointDialog({ checkpoint, onResolve, onClose }: Props) {
       });
     }, 1000);
     return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [checkpoint, onResolve]);
 
   const conflict = checkpoint.conflict;
@@ -178,7 +185,9 @@ export function CheckpointDialog({ checkpoint, onResolve, onClose }: Props) {
           <button
             onClick={() =>
               onResolve(
-                selectedOption === "__custom" ? customInput : selectedOption!
+                selectedOption === "__custom"
+                  ? customInput
+                  : optionLabel(selectedOption!)
               )
             }
             disabled={

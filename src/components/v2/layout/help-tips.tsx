@@ -1,5 +1,15 @@
 "use client";
 
+/**
+ * HARIS v2 — Yardım / 5 adım turu
+ *
+ * Eski tasarımda ekranın sol altında sabit "büyük sarı Yardım butonu" vardı.
+ * Kullanıcı isteğiyle kaldırıldı: artık tetikleyici, dikey işlem çubuğundaki
+ * (OrchestraRail) diğer öğelerle aynı stilde KÜÇÜK DİKEY "❓ Yardım" butonu.
+ *
+ * Açılan panel, çubuğun soluna (Canvas tarafına) yapışık açılır.
+ */
+
 import { useEffect, useState } from "react";
 
 const STEPS = [
@@ -41,24 +51,52 @@ export function HelpTips() {
     }
   }, []);
 
+  const toggle = () => {
+    const next = !open;
+    setOpen(next);
+    if (next) {
+      try {
+        localStorage.setItem("haris_tour_seen", "1");
+      } catch {
+        /* ignore */
+      }
+    }
+  };
+
   return (
-    <div className="fixed bottom-4 left-4 z-40">
+    <div className="relative flex-none border-t border-white/10">
+      {/* Küçük dikey Yardım butonu — Ayarlar'ın yanında */}
+      <button
+        type="button"
+        onClick={toggle}
+        title={open ? "Yardımı kapat" : "Yardım"}
+        aria-label="Yardım"
+        className={`w-full flex items-center justify-center py-3 min-h-[5rem] transition ${
+          open
+            ? "bg-[#C9A961]/15 text-[#C9A961]"
+            : "text-slate-300 hover:bg-white/5"
+        }`}
+      >
+        <span
+          className="text-[10px] font-semibold tracking-wide whitespace-nowrap"
+          style={{
+            writingMode: "vertical-rl",
+            transform: "rotate(180deg)",
+          }}
+        >
+          ❓ Yardım
+        </span>
+      </button>
+
       {open && (
-        <div className="mb-2 w-80 rounded-xl border border-[#C9A961]/40 bg-[#0A1628] shadow-2xl p-4">
+        <div className="absolute right-full top-0 mr-2 w-80 max-h-[26rem] overflow-y-auto rounded-xl border border-[#C9A961]/40 bg-[#0A1628] shadow-2xl p-4 z-50">
           <div className="flex items-center justify-between mb-3">
             <h3 className="text-sm font-semibold text-[#C9A961]">
               5 adımda HARIS
             </h3>
             <button
               type="button"
-              onClick={() => {
-                try {
-                  localStorage.setItem("haris_tour_seen", "1");
-                } catch {
-                  /* ignore */
-                }
-                setOpen(false);
-              }}
+              onClick={toggle}
               className="text-slate-500 hover:text-slate-200 text-xs"
             >
               ✕
@@ -81,15 +119,15 @@ export function HelpTips() {
               </li>
             ))}
           </ol>
+          <button
+            type="button"
+            onClick={toggle}
+            className="mt-4 w-full px-3 py-2 rounded text-xs font-semibold bg-[#C9A961] text-[#0A1628] hover:bg-[#e6c479]"
+          >
+            Turu kapat
+          </button>
         </div>
       )}
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        className="h-10 px-3 rounded-full bg-[#C9A961] text-[#0A1628] text-sm font-semibold shadow-lg hover:bg-[#e6c479]"
-      >
-        {open ? "Kapat" : "❓ Yardım"}
-      </button>
     </div>
   );
 }

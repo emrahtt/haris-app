@@ -58,13 +58,13 @@ const LENGTH_OPTIONS = [
 const CHECKPOINT_OPTIONS = [
   {
     id: "always_ask" as const,
-    label: "Her zaman sor",
-    desc: "Her TUR sonunda durur, onayınızı bekler",
+    label: "Her tur sonunda sor",
+    desc: "TUR 1 ve TUR 2 sonunda durur, onayınızı bekler",
   },
   {
     id: "ask_on_conflict" as const,
-    label: "Sadece çelişkide sor (önerilen)",
-    desc: "Ajanlar arası farklı görüş olursa müdahale ister",
+    label: "Gerektiğinde sor (önerilen)",
+    desc: "TUR 1→3 durmadan çalışır, dilekçe Canvas'a düşer; yalnızca kritik bilgi/belge gerekirse durur ve size sorar",
   },
   {
     id: "auto_continue" as const,

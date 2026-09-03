@@ -7,6 +7,7 @@
  */
 
 import { V1Bridge } from "@/components/v2/layout/v1-bridge";
+import { HelpTips } from "@/components/v2/layout/help-tips";
 
 interface Props {
   workspaceId: string;
@@ -93,9 +94,7 @@ export function OrchestraRail({
         <VerticalLabel>🤝 Paylaş</VerticalLabel>
       </button>
 
-      <div className="flex-none flex items-center justify-center py-2 min-h-[5.5rem] border-t border-white/10">
-        <V1Bridge workspaceId={workspaceId} vertical />
-      </div>
+      <V1Bridge workspaceId={workspaceId} vertical />
 
       <button
         type="button"
@@ -105,6 +104,9 @@ export function OrchestraRail({
       >
         <VerticalLabel>⚙️ Ayarlar</VerticalLabel>
       </button>
+
+      {/* Küçük dikey Yardım — Ayarlar'ın yanında (eski büyük sarı buton kaldırıldı) */}
+      <HelpTips />
 
       <div className="flex-1 min-h-2 border-t border-white/5" />
     </div>

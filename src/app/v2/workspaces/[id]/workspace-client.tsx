@@ -14,7 +14,6 @@ import { MethodPicker, type ExtractionMethod } from "@/components/v2/vault/metho
 import { TabularReviewView } from "@/components/v2/tabular/tabular-review-view";
 import { SharePanel } from "@/components/v2/sharing/share-panel";
 import { OrchestraRail } from "@/components/v2/layout/orchestra-rail";
-import { HelpTips } from "@/components/v2/layout/help-tips";
 import type {
   VaultDocument,
   AgentOutput,
@@ -737,8 +736,6 @@ export function WorkspaceClient({
           />
         }
       />
-
-      <HelpTips />
 
       {/* Settings modal */}
       {showSettings && (

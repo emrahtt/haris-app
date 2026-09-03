@@ -39,6 +39,16 @@ export interface OrchestraContext {
   /** 2 veya 3: checkpoint sonrası TUR 2/3'ten devam */
   resumeFromRound?: 1 | 2 | 3;
   priorOutputs?: Record<AgentId, string>;
+  /**
+   * Kullanıcının checkpoint'te verdiği karar/talimat metni.
+   * TUR 3 sentez promptuna "kullanıcı yönlendirmesi" olarak işlenir.
+   */
+  userGuidance?: string;
+  /**
+   * Kullanıcı "yine de devam et" dediyse true olur; belge içeriği
+   * okunamasa bile orkestrayı durdurmadan ilerletir.
+   */
+  forceContinue?: boolean;
 }
 
 export type StreamEvent =
@@ -137,6 +147,57 @@ export async function runOrchestra(
       "delil_haritalama",
     ].includes(a)
   ) as AgentId[];
+
+  // ── Pre-flight: Okunabilir belge içeriği var mı? ─────────────
+  // Kullanıcı bilgi/belge sağlamadan orkestra boş analiz üretmesin.
+  // (Gerekliyse durup gerekçeyi yazar; "yine de devam et" seçilirse forceContinue ile ilerler.)
+  const isFullRun = (ctx.resumeFromRound ?? 1) <= 1;
+  const hasReadableContent = ctx.documents.some(
+    (d) =>
+      (d.extractedText?.trim().length ?? 0) > 50 ||
+      (d.summary?.trim().length ?? 0) > 0
+  );
+  if (
+    isFullRun &&
+    !ctx.forceContinue &&
+    ctx.preferences.checkpointMode !== "auto_continue" &&
+    ctx.documents.length > 0 &&
+    !hasReadableContent
+  ) {
+    const blockerId = uuid();
+    const blockerReason =
+      "Okunabilir belge içeriği bulunamadı. Belgeler yüklenmiş görünüyor ama içerikleri (OCR/metin/özet) çıkarılamamış — ajanlar bu hâliyle yalnızca dosya adlarıyla çalışır ve dilekçe sağlıklı üretilemez.";
+    emit({
+      type: "checkpoint",
+      checkpoint: {
+        id: blockerId,
+        triggeredAt: new Date().toISOString(),
+        reason: blockerReason,
+        timeoutMs: 0,
+        conflict: {
+          id: blockerId,
+          round: 1,
+          agents: analyzers.slice(0, 3),
+          description:
+            "Ne yapabilirsiniz?\n1) Vault'tan belgeyi silip yeniden yükleyin (OCR/farklı yöntem seçin) → sonra İşlemi Başlat'a basın.\n2) Veya 'Yine de devam et' diyerek içeriksiz ilerleyin (önerilmez; çıktı zayıf olur).",
+          options: [
+            {
+              id: "opt_override_unreadable",
+              label: "Yine de devam et (içerik okunamıyor)",
+              reasoning:
+                "Ajanlar dosya adı + özet olmadan çalışır; üretilen dilekçe zayıf ve eksik olabilir.",
+            },
+          ],
+        },
+      },
+    });
+    emit({
+      type: "orchestrator_message",
+      content:
+        "Duruyorum — okunabilir belge içeriği bulamadım. 📄 Bu davayı sağlıklı analiz edebilmem için belgelerin OCR/metin özetinin çıkarılmış olması gerekiyor. Lütfen Vault'tan belgeleri kontrol edip (durum 'ready' olmalı) yeniden başlatın veya 'Yine de devam et' deyin.",
+    });
+    return;
+  }
 
   // Orkestra Şefi karşılaması
   emit({
@@ -257,46 +318,49 @@ export async function runOrchestra(
   });
   await Promise.all(round1Promises);
 
-  // Çelişki tespit (basit heuristik: Karşı Argüman herkesi eleştiriyor)
-  if (
-    analyzers.includes("karsi_argüman") &&
-    ctx.preferences.checkpointMode !== "auto_continue"
-  ) {
-    const conflictId = uuid();
+  // ── TUR 1 bitti — özet ve durma politikası ───────────────────
+  emit({
+    type: "orchestrator_message",
+    content: summarizeRound1(analyzers, round1Outputs),
+  });
+
+  // "always_ask": Kullanıcı her TUR sonunda onay isteyeceğini seçti → dur, açıkla, bekle.
+  if (ctx.preferences.checkpointMode === "always_ask") {
+    const approvalId = uuid();
+    const karsiAgent: AgentId = "karsi_argüman";
     emit({
       type: "checkpoint",
       checkpoint: {
-        id: conflictId,
+        id: approvalId,
         triggeredAt: new Date().toISOString(),
         reason:
-          "TUR 1 tamamlandı. Karşı Argüman Ajanı diğer ajanlarda zayıflık tespit etti. Devam stratejisini seçin.",
-        timeoutMs:
-          ctx.preferences.checkpointMode === "always_ask" ? 0 : 10000,
+          "TUR 1 analizleri tamamlandı. Modunuz 'Her zaman sor' olduğu için TUR 2–3'e geçmeden önce devam onayınızı bekliyorum.",
+        timeoutMs: 0,
         conflict: {
-          id: conflictId,
+          id: approvalId,
           round: 1,
           agents: analyzers.slice(0, 3),
           description:
-            "Maddi Hukuk ve Karşı Argüman ajanları farklı hukukî dayanak öneriyor. Hangi yolla devam edelim?",
+            "Onay verdiğinizde TUR 2 (çapraz inceleme) ve TUR 3 (dilekçe sentezi) çalışacak ve taslak Canvas'a düşecek. Bir strateji tercihi yapabilir veya 'Ben farklı bir şey diyeceğim' ile ek talimat verebilirsiniz.",
           options: [
             {
-              id: "opt_maddi",
-              label: "Maddi Hukuk önerisini takip et",
-              recommendedBy: "maddi_hukuk",
+              id: "opt_continue",
+              label: "TUR 2–3'e devam et, taslağı üret (önerilen)",
+              recommendedBy: karsiAgent,
               reasoning:
-                "Klasik hukukî dayanak. Daha geniş içtihat birikimi var.",
+                "Karşı Argüman çapraz eleştiri yapar, ardından sentezle taslak üretilir.",
             },
             {
-              id: "opt_karsi",
-              label: "Karşı Argüman uyarılarını dikkate al, alternatif strateji",
-              recommendedBy: "karsi_argüman",
+              id: "opt_priority_critique",
+              label: "Sentezde Karşı Argüman'ın tespitlerine öncelik ver",
               reasoning:
-                "Riskleri minimize eder, daha savunmacı bir yaklaşım.",
+                "Stres-test edilmiş, savunmacı ve sağlamlaştırılmış bir taslak istiyorum.",
             },
             {
-              id: "opt_both",
-              label: "İkisini de dene, iki versiyon üret",
-              reasoning: "Daha fazla token harcar ama maksimum esneklik sağlar.",
+              id: "opt_comprehensive",
+              label: "Kapsamlı hukukî dayanakları öne çıkar",
+              reasoning:
+                "Geniş içtihat ve kanun maddesi kullanımı, detaylı gerekçe istiyorum.",
             },
           ],
         },
@@ -305,10 +369,11 @@ export async function runOrchestra(
     emit({
       type: "orchestrator_message",
       content:
-        "TUR 1 bitti. Seçiminizi yaptıktan sonra TUR 2 ve dilekçe sentezi devam edecek.",
+        "TUR 1 bitti, onayınızı bekliyorum. Seçiminizi yaptığınız anda TUR 2–3 çalışır ve dilekçe taslağı Canvas'a düşer. Not: 'Her zaman sor' modunda olduğunuz için TUR 2 sonunda bir kez daha onay isteyeceğim.",
     });
     return;
   }
+  // ask_on_conflict / auto_continue: gerekmedikçe durmayız — TUR 2–3 aynı akışta devam eder.
   } // startRound <= 1
 
   // ─────────────────────────────────────────────────────
@@ -328,6 +393,7 @@ export async function runOrchestra(
 
   // Sadece Karşı Argüman çalışsın TUR 2'de (red-team yorumu)
   const crossReviewer: AgentId = "karsi_argüman";
+  let crossCritique: string | undefined;
   if (analyzers.includes(crossReviewer)) {
     emit({ type: "agent_start", agentId: crossReviewer, round: 2 });
     try {
@@ -351,6 +417,7 @@ export async function runOrchestra(
       });
       round1Outputs[crossReviewer] =
         (round1Outputs[crossReviewer] ?? "") + "\n\n## TUR 2 Eleştirisi\n" + result.content;
+      crossCritique = result.content;
       emit({
         type: "agent_done",
         agentId: crossReviewer,
@@ -376,6 +443,59 @@ export async function runOrchestra(
         message: String(e),
       });
     }
+  }
+
+  // ── always_ask: TUR 2 (çapraz inceleme) sonunda da onay iste ──
+  if (
+    ctx.preferences.checkpointMode === "always_ask" &&
+    typeof crossCritique === "string" &&
+    crossCritique.trim().length > 0
+  ) {
+    const approvalId = uuid();
+    emit({
+      type: "checkpoint",
+      checkpoint: {
+        id: approvalId,
+        triggeredAt: new Date().toISOString(),
+        reason:
+          "TUR 2 (çapraz inceleme) tamamlandı. 'Her zaman sor' modunda olduğunuz için TUR 3'e (dilekçe sentezi) geçmeden onayınızı bekliyorum.",
+        timeoutMs: 0,
+        conflict: {
+          id: approvalId,
+          round: 2,
+          agents: [crossReviewer, ...analyzers.filter((a) => a !== crossReviewer).slice(0, 2)],
+          description:
+            "Karşı Argüman Ajanı diğer ajan çıktılarını eleştirdi; eleştiriler senteze işlenecek. Onay verdiğinizde TUR 3 çalışır ve dilekçe taslağı Canvas'a düşer.",
+          options: [
+            {
+              id: "opt_continue_draft",
+              label: "TUR 3'e geç, dilekçe taslağını üret (önerilen)",
+              recommendedBy: crossReviewer,
+              reasoning:
+                "Çapraz inceleme bitti; tüm çıktılar ve eleştiriler sentezlenerek taslak üretilir.",
+            },
+            {
+              id: "opt_harden",
+              label: "Taslakta Karşı Argüman'ın tespitlerini ayrıntılı ele al",
+              reasoning:
+                "Zayıflık tespitlerine güçlü cevaplar içeren sağlamlaştırılmış taslak istiyorum.",
+            },
+            {
+              id: "opt_concise",
+              label: "Taslağı kısa ve öz tut",
+              reasoning:
+                "Netice-i talep öncelikli, kısa bir dilekçe istiyorum.",
+            },
+          ],
+        },
+      },
+    });
+    emit({
+      type: "orchestrator_message",
+      content:
+        "TUR 2 bitti, onayınızı bekliyorum. Seçiminizi yaptığınızda TUR 3 sentezi çalışır ve dilekçe taslağı Canvas'ta belirir.",
+    });
+    return;
   }
   } // startRound <= 2
 
@@ -555,7 +675,13 @@ function buildSynthesisPrompt(
     )
     .join("");
 
-  return `# NİHAİ DİLEKÇE SENTEZİ\n\n## Dava\n${ctx.caseTitle}\n${ctx.caseDescription}\n\n## UZUNLUK\n${lengthInstr}\n\n## KALİTE\n${qualityInstr}\n\n## Uzman Ajanların Çıktıları\n${analyzerOutputs}\n\n---\n\nYukarıdaki tüm ajan çıktılarını SENTEZ ederek profesyonel bir Türk hukuku dilekçesi yaz.\n\nKURALLAR:\n1. Format: Mahkeme adı → Esas No → Taraflar → KONU → AÇIKLAMALAR (numaralı paragraflar) → HUKUKÎ DAYANAK → NETİCE-İ TALEP → Tarih + İmza\n2. Her paragrafa <!-- src:AJAN_ID --> yorum ekle\n3. Atıfları tam formatta yaz: "Yargıtay X. HD, E.YYYY/XYZ, K.YYYY/ABC, T.GG.AA.YYYY"\n4. ASLA halüsinasyon — emin değilsen "İçtihat Tarama Ajanı'nın bulduğu kararlar" gibi belirt`;
+  // Checkpoint'te kullanıcının verdiği karar/talimat — mutlaka uygula
+  const userGuidance = ctx.userGuidance?.trim();
+  const guidanceBlock = userGuidance
+    ? `\n\n## KULLANICI YÖNLENDİRMESİ (orkestra checkpoint'ine verdiği karar)\n${userGuidance}\nBu yönlendirme KESİN talimattır: dilekçe taslağını buna göre şekillendir.\n`
+    : "";
+
+  return `# NİHAİ DİLEKÇE SENTEZİ\n\n## Dava\n${ctx.caseTitle}\n${ctx.caseDescription}\n\n## UZUNLUK\n${lengthInstr}\n\n## KALİTE\n${qualityInstr}${guidanceBlock}\n\n## Uzman Ajanların Çıktıları\n${analyzerOutputs}\n\n---\n\nYukarıdaki tüm ajan çıktılarını SENTEZ ederek profesyonel bir Türk hukuku dilekçesi yaz.\n\nKURALLAR:\n1. Format: Mahkeme adı → Esas No → Taraflar → KONU → AÇIKLAMALAR (numaralı paragraflar) → HUKUKÎ DAYANAK → NETİCE-İ TALEP → Tarih + İmza\n2. Her paragrafa <!-- src:AJAN_ID --> yorum ekle\n3. Atıfları tam formatta yaz: "Yargıtay X. HD, E.YYYY/XYZ, K.YYYY/ABC, T.GG.AA.YYYY"\n4. ASLA halüsinasyon — emin değilsen "İçtihat Tarama Ajanı'nın bulduğu kararlar" gibi belirt`;
 }
 
 interface CallAgentResult {
@@ -751,6 +877,41 @@ function mockQualityReport(markdown: string): {
   return { paragraphs, summary };
 }
 
+
+/**
+ * TUR 1 sonunda chat'e düşen kısa özet mesajı.
+ * Her ajanın çıktısının ilk satırını özet olarak gösterir.
+ */
+function summarizeRound1(
+  analyzers: AgentId[],
+  outputs: Record<AgentId, string>
+): string {
+  const seen = new Set<string>();
+  const lines = analyzers
+    .filter((a) => {
+      const text = (outputs[a] ?? "").trim();
+      if (!text || seen.has(a)) return false;
+      seen.add(a);
+      return true;
+    })
+    .map((a) => {
+      const text = (outputs[a] ?? "").trim();
+      const firstLine =
+        text
+          .split("\n")
+          .map((s) => s.trim())
+          .find((s) => s.length > 0) ?? "";
+      const snippet =
+        firstLine.length > 170 ? firstLine.slice(0, 170) + "…" : firstLine;
+      return `• ${AGENTS[a].emoji} **${AGENTS[a].shortName}**: ${snippet}`;
+    });
+  return [
+    `**TUR 1 tamamlandı.** ${analyzers.length} uzman ajan dosyayı bağımsız inceledi:`,
+    ...lines,
+    "",
+    "Sıradaki adım: TUR 2 çapraz inceleme ve TUR 3 dilekçe sentezi. Taslak bittiğinde Canvas'ta görünecek.",
+  ].join("\n");
+}
 
 /**
  * Davanın anahtar terimlerinden Bedesten arama sorgusu üret.

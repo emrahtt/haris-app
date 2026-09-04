@@ -69,6 +69,9 @@ export function WorkspaceClient({
   const [orchestraStatus, setOrchestraStatus] = useState<string>(
     workspace.orchestration_status
   );
+  const [analysisStage, setAnalysisStage] = useState<string>("");
+  const [qualityIterations, setQualityIterations] = useState<Array<{ iteration: number; score: number; status: string }>>([]);
+  const [deliveryGate, setDeliveryGate] = useState<{ status: string; reason: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // ── Initial chat: orkestra şefi karşılaması ──────────────
@@ -289,8 +292,19 @@ export function WorkspaceClient({
     type: string;
     [k: string]: unknown;
   }) => {
-    switch (event.type) {
-      case "round_start":
+  switch (event.type) {
+  case "analysis_stage":
+    setAnalysisStage(String(event.message ?? event.stage ?? ""));
+    break;
+  case "quality_iteration":
+    setQualityIterations((prev) => [...prev.filter((item) => item.iteration !== Number(event.iteration)), { iteration: Number(event.iteration), score: Number(event.score ?? 0), status: String(event.status ?? "") }]);
+    break;
+  case "delivery_gate": {
+    const gate = event.gate as { status: string; reason: string };
+    setDeliveryGate(gate);
+    break;
+  }
+  case "round_start":
         setWorkspace((w) => ({
           ...w,
           current_round: event.round as RoundNumber,
@@ -453,7 +467,7 @@ export function WorkspaceClient({
     }
   };
 
-  // ── Chat gönderme ────────────────────────────────────────
+  // ── Chat gönderme ────────────────────────────────���───────
   const handleSend = async (
     content: string,
     mentionedAgents: AgentId[]
@@ -655,6 +669,21 @@ export function WorkspaceClient({
               ? ` · ${workspace.preferences.esasNo}`
               : ""}
           </span>
+          {analysisStage && orchestraStatus === "running" ? (
+            <span className="max-w-sm truncate text-[10px] text-slate-400" title={analysisStage}>
+              {analysisStage}
+            </span>
+          ) : null}
+          {qualityIterations.length > 0 ? (
+            <span className="text-[10px] text-[#C9A961]">
+              Kalite {qualityIterations[qualityIterations.length - 1].iteration}/3 · {qualityIterations[qualityIterations.length - 1].score}/100
+            </span>
+          ) : null}
+          {deliveryGate ? (
+            <span className={`text-[10px] uppercase tracking-widest ${deliveryGate.status === "approved" ? "text-emerald-300" : "text-amber-300"}`} title={deliveryGate.reason}>
+              {deliveryGate.status === "approved" ? "Teslime hazır" : "Avukat incelemesi"}
+            </span>
+          ) : null}
           {orchestraStatus === "running" ? (
             <span className="inline-flex items-center gap-1.5 text-[10px] uppercase tracking-widest text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 rounded-full px-2 py-0.5">
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />

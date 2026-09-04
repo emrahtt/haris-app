@@ -20,6 +20,8 @@ import { buildMemoryPromptBlock } from "../memory/prompt-builder";
 import { searchYargitay } from "../tools/bedesten-search";
 import { MODEL_REGISTRY } from "../providers";
 import type { VaultDocument } from "../state/workspace-state";
+import { buildEnhancedDocumentContext } from "./document-context";
+import type { DeliveryGate } from "./evidence-model";
 
 export interface OrchestraContext {
   workspaceId: string;
@@ -53,6 +55,10 @@ export interface OrchestraContext {
 
 export type StreamEvent =
   | { type: "round_start"; round: 1 | 2 | 3 }
+  | { type: "analysis_stage"; stage: "intake" | "evidence_model" | "issue_tree" | "red_team" | "revision" | "citation_check" | "delivery_gate"; message: string }
+  | { type: "quality_iteration"; iteration: number; score: number; status: "passed" | "needs_revision" | "requires_review"; changes?: string[] }
+  | { type: "claim_matrix"; claims: unknown[]; conflicts: unknown[] }
+  | { type: "delivery_gate"; gate: DeliveryGate }
   | { type: "agent_start"; agentId: AgentId; round: 1 | 2 | 3 }
   | {
       type: "agent_done";
@@ -207,7 +213,35 @@ export async function runOrchestra(
       .join(", ")}.\n\nTahmini süre: ~${analyzers.length * 12 + 60} saniye.`,
   });
 
-  const documentContext = buildDocumentContext(ctx.documents);
+  emit({
+    type: "analysis_stage",
+    stage: "intake",
+    message: "Dosya alımı: tüm belgeler sayfa-bazlı ve bölüm-bazlı taranıyor.",
+  });
+  const enhancedContext = buildEnhancedDocumentContext(ctx.documents);
+  const documentContext = {
+    summary: enhancedContext.summary,
+    full: enhancedContext.fullByDocument
+      .map((document) => {
+        const sectionText = document.sections
+          .map((section) => `\\n#### ${section.name} (s.${section.startPage}-${section.endPage})\\n${section.content}`)
+          .join("\\n");
+        return `\\n### Belge: ${document.filename} (${document.totalPages} sayfa)\\n${sectionText}\\n`;
+      })
+      .join(""),
+  };
+  emit({
+    type: "analysis_stage",
+    stage: "evidence_model",
+    message: `${enhancedContext.stats.totalDocuments} belge, ${enhancedContext.stats.totalPages} sayfa ve ${enhancedContext.conflicts.length} çelişki adayı indekslendi.`,
+  });
+  if (enhancedContext.conflicts.length > 0) {
+    emit({
+      type: "claim_matrix",
+      claims: [],
+      conflicts: enhancedContext.conflicts,
+    });
+  }
   const startRound = ctx.resumeFromRound ?? 1;
   const round1Outputs: Record<AgentId, string> = {
     ...(ctx.priorOutputs ?? {}),
@@ -391,59 +425,40 @@ export async function runOrchestra(
     messageType: "directive",
   });
 
-  // Sadece Karşı Argüman çalışsın TUR 2'de (red-team yorumu)
-  const crossReviewer: AgentId = "karsi_argüman";
-  let crossCritique: string | undefined;
-  if (analyzers.includes(crossReviewer)) {
-    emit({ type: "agent_start", agentId: crossReviewer, round: 2 });
+  // Çoklu red-team: tek bir eleştiri yerine farklı risk mercekleri
+  const crossReviewers: AgentId[] = [
+    "karsi_argüman",
+    "usul_hukuku",
+    "delil_haritalama",
+    "ictihat_tarama",
+  ].filter((agent) => analyzers.includes(agent as AgentId)) as AgentId[];
+  const critiques: string[] = [];
+  emit({
+    type: "analysis_stage",
+    stage: "red_team",
+    message: `${crossReviewers.length} bağımsız red-team merceği devrede: karşı taraf, usul, delil ve içtihat.`,
+  });
+
+  await Promise.all(crossReviewers.map(async (reviewer) => {
+    emit({ type: "agent_start", agentId: reviewer, round: 2 });
     try {
-      // Memory'yi tekrar çek (TUR 1 sonuçları eklendi)
       const memoryR2 = await getMatterMemory(ctx.workspaceId, ctx.userId);
       const scratchpadR2 = await readScratchpad(ctx.workspaceId, ctx.userId);
       const memoryBlockR2 = buildMemoryPromptBlock(memoryR2, scratchpadR2);
-
-      const r2Prompt = `${memoryBlockR2}\n\nTUR 2 — Çapraz inceleme.\n\nDiğer ajanların TUR 1 çıktıları:\n\n${Object.entries(
-        round1Outputs
-      )
-        .filter(([k]) => k !== crossReviewer)
-        .map(
-          ([k, v]) =>
-            `### ${AGENTS[k as AgentId].displayName}\n${v.slice(0, 2000)}\n`
-        )
-        .join("\n")}\n\nGÖREV: Her birinin en zayıf 1-2 argümanını tespit et ve nasıl güçlendirileceğini öner. Acımasız ama yapıcı ol.`;
-      const result = await callAgent(crossReviewer, {
-        prompt: r2Prompt,
-        ctx,
-      });
-      round1Outputs[crossReviewer] =
-        (round1Outputs[crossReviewer] ?? "") + "\n\n## TUR 2 Eleştirisi\n" + result.content;
-      crossCritique = result.content;
-      emit({
-        type: "agent_done",
-        agentId: crossReviewer,
-        round: 2,
-        content: result.content,
-        tokensUsed: result.tokensUsed,
-        cost: result.cost,
-        rawResponse: result.rawResponse,
-      });
-      emit({
-        type: "agent_message",
-        from: crossReviewer,
-        to: "orchestrator",
-        round: 2,
-        content: result.content.slice(0, 400) + "…",
-        messageType: "critique",
-      });
+      const r2Prompt = `${memoryBlockR2}\n\nTUR 2 — BAĞIMSIZ RED-TEAM İNCELEMESİ.\n\nDosya bağlamı:\n${documentContext.full}\n\nTUR 1 analizleri:\n${Object.entries(round1Outputs)
+        .map(([k, v]) => `### ${AGENTS[k as AgentId]?.displayName ?? k}\n${v.slice(0, 3500)}`)
+        .join("\\n\\n")}\n\n${AGENTS[reviewer].displayName} olarak yalnızca kendi uzmanlık merceğinle incele. Her risk için: (1) iddia, (2) kaynak, (3) açık zayıflık, (4) düzeltme önerisi, (5) kritik/önem derecesi ver. Kaynaksız bir şeyi doğrulanmış kabul etme.`;
+      const result = await callAgent(reviewer, { prompt: r2Prompt, ctx, jsonMode: reviewer === "delil_haritalama" });
+      const critique = `## ${AGENTS[reviewer].displayName} Red-Team\\n${result.content}`;
+      critiques.push(critique);
+      round1Outputs[reviewer] = `${round1Outputs[reviewer] ?? ""}\\n\\n${critique}`;
+      emit({ type: "agent_done", agentId: reviewer, round: 2, content: result.content, tokensUsed: result.tokensUsed, cost: result.cost, rawResponse: result.rawResponse });
+      emit({ type: "agent_message", from: reviewer, to: "orchestrator", round: 2, content: result.content.slice(0, 400) + (result.content.length > 400 ? "…" : ""), messageType: "critique" });
     } catch (e) {
-      emit({
-        type: "agent_error",
-        agentId: crossReviewer,
-        round: 2,
-        message: String(e),
-      });
+      emit({ type: "agent_error", agentId: reviewer, round: 2, message: String(e) });
     }
-  }
+  }));
+  const crossCritique = critiques.join("\\n\\n");
 
   // ── always_ask: TUR 2 (çapraz inceleme) sonunda da onay iste ──
   if (
@@ -463,14 +478,14 @@ export async function runOrchestra(
         conflict: {
           id: approvalId,
           round: 2,
-          agents: [crossReviewer, ...analyzers.filter((a) => a !== crossReviewer).slice(0, 2)],
+          agents: [...crossReviewers.slice(0, 2), ...analyzers.filter((a) => !crossReviewers.includes(a)).slice(0, 2)],
           description:
             "Karşı Argüman Ajanı diğer ajan çıktılarını eleştirdi; eleştiriler senteze işlenecek. Onay verdiğinizde TUR 3 çalışır ve dilekçe taslağı Canvas'a düşer.",
           options: [
             {
               id: "opt_continue_draft",
               label: "TUR 3'e geç, dilekçe taslağını üret (önerilen)",
-              recommendedBy: crossReviewer,
+              recommendedBy: crossReviewers[0],
               reasoning:
                 "Çapraz inceleme bitti; tüm çıktılar ve eleştiriler sentezlenerek taslak üretilir.",
             },
@@ -559,45 +574,75 @@ export async function runOrchestra(
     return;
   }
 
-  // Kalite Kontrol Ajanı — paragraf paragraf puanlama
-  emit({ type: "agent_start", agentId: "kalite_kontrol", round: 3 });
-  try {
-    const qcPrompt = `Aşağıdaki dilekçe taslağını paragraf paragraf değerlendir.\n\n${petitionMarkdown}\n\nHer paragrafı index sırasıyla [gerekli|nüans|doldurma] olarak puanla. SADECE JSON ÇIKTI.`;
-    const result = await callAgent("kalite_kontrol", {
-      prompt: qcPrompt,
-      ctx,
-      jsonMode: true,
-    });
-    let qualityReport: unknown;
+  // Kalite kapısı: taslak → denetim → atıf kontrolü → red-team → revizyon.
+  // Strict modda kritik hata varsa "tamamlandı" demek yerine teslimi durdurur.
+  let qualityReport: {
+    summary?: {
+      kalite_skoru?: number;
+      evidenceCompleteness?: number;
+      criticalIssues?: string[];
+    };
+    paragraphs?: unknown[];
+  } | null = null;
+  let deliveryGate: DeliveryGate = {
+    status: "requires_review",
+    reason: "Kalite denetimi henüz tamamlanmadı.",
+    criticalIssues: [],
+    warnings: [],
+    timestamp: new Date().toISOString(),
+  };
+
+  for (let iteration = 1; iteration <= 3; iteration += 1) {
+    emit({ type: "quality_iteration", iteration, score: 0, status: "needs_revision" });
+    emit({ type: "analysis_stage", stage: "citation_check", message: `Kalite iterasyonu ${iteration}: iddia, delil ve atıflar denetleniyor.` });
+    emit({ type: "agent_start", agentId: "kalite_kontrol", round: 3 });
+
     try {
-      qualityReport = JSON.parse(result.content);
-    } catch {
-      qualityReport = mockQualityReport(petitionMarkdown);
+      const qcPrompt = `Aşağıdaki dilekçeyi bir hukuk bürosunun son kalite kapısı gibi değerlendir.\n\n${petitionMarkdown}\n\nHer paragraf için JSON üret: index, category (gerekli|nüans|doldurma), score (0-100), reason, warnings. Ayrıca summary içinde kalite_skoru, factualAccuracy, legalCorrectness, evidenceCompleteness, persuasivenessScore, criticalIssues ve deliveryStatus alanlarını ver.\n\nZORUNLU: Belge/kanun/içtihat dayanağı olmayan maddi iddiaları kritik sorun olarak işaretle. Doğrulanmamış kararları doğrulanmış gösterme.`;
+      const result = await callAgent("kalite_kontrol", { prompt: qcPrompt, ctx, jsonMode: true });
+      try {
+        qualityReport = JSON.parse(result.content);
+      } catch {
+        qualityReport = mockQualityReport(petitionMarkdown);
+      }
+      const score = Number(qualityReport?.summary?.kalite_skoru ?? 0);
+      const criticalIssues = Array.isArray(qualityReport?.summary?.criticalIssues)
+        ? qualityReport.summary.criticalIssues.map((description: string) => ({ type: "unsupported_claim" as const, description }))
+        : [];
+      const evidenceCompleteness = Number(qualityReport?.summary?.evidenceCompleteness ?? 0);
+      const passed = score >= (ctx.preferences.qualityMode === "strict" ? 88 : 78) && criticalIssues.length === 0 && evidenceCompleteness >= 0.7;
+      deliveryGate = {
+        status: passed ? "approved" : criticalIssues.length > 0 ? "requires_review" : "rejected",
+        reason: passed ? "Kalite eşiği, kanıt kapsamı ve kritik hata kapısı geçildi." : "Kalite eşiği veya kanıt kapsamı henüz yeterli değil; dilekçe yeniden gözden geçirilecek.",
+        criticalIssues,
+        warnings: [],
+        reviewedBy: "kalite_kontrol",
+        timestamp: new Date().toISOString(),
+      };
+      emit({ type: "agent_done", agentId: "kalite_kontrol", round: 3, content: result.content, tokensUsed: result.tokensUsed, cost: result.cost, rawResponse: result.rawResponse });
+      emit({ type: "quality_iteration", iteration, score, status: passed ? "passed" : deliveryGate.status === "requires_review" ? "requires_review" : "needs_revision" });
+      emit({ type: "petition_draft", version: iteration + 1, markdown: petitionMarkdown, quality: qualityReport });
+      emit({ type: "delivery_gate", gate: deliveryGate });
+
+      if (passed) break;
+      if (iteration === 3) break;
+
+      emit({ type: "analysis_stage", stage: "revision", message: `İterasyon ${iteration} başarısız: editör taslağı kanıt ve red-team bulgularına göre yeniden yazıyor.` });
+      const revision = await callAgent("dilekce_editoru", {
+        prompt: `${buildSynthesisPrompt(ctx, round1Outputs, analyzers)}\n\n## ÖNCEKİ TASLAK\n${petitionMarkdown}\n\n## KALİTE RAPORU\n${JSON.stringify(qualityReport)}\n\n## ZORUNLU REVİZYON\nSadece doğrulanabilir iddiaları koru. Her maddi iddiayı belge/sayfa, kanun veya doğrulanmış içtihatla bağla. Kritik sorunları gider. Belirsiz kalanları açıkça [AVUKAT İNCELEMESİ] işaretiyle belirt.`,
+        ctx,
+        maxTokens: 16000,
+      });
+      petitionMarkdown = revision.content;
+      petitionCost += revision.cost;
+    } catch (error) {
+      deliveryGate = { status: "requires_review", reason: `Kalite kapısı teknik olarak tamamlanamadı: ${String(error)}`, criticalIssues: [{ type: "legal_error", description: "Kalite doğrulaması başarısız oldu." }], warnings: [], timestamp: new Date().toISOString() };
+      emit({ type: "delivery_gate", gate: deliveryGate });
+      break;
     }
-    emit({
-      type: "agent_done",
-      agentId: "kalite_kontrol",
-      round: 3,
-      content: result.content,
-      tokensUsed: result.tokensUsed,
-      cost: result.cost,
-      rawResponse: result.rawResponse,
-    });
-    emit({
-      type: "petition_draft",
-      version: 2,
-      markdown: petitionMarkdown,
-      quality: qualityReport,
-    });
-  } catch {
-    // Kalite Kontrol başarısız olursa mock report ile devam
-    emit({
-      type: "petition_draft",
-      version: 2,
-      markdown: petitionMarkdown,
-      quality: mockQualityReport(petitionMarkdown),
-    });
   }
+
+  emit({ type: "analysis_stage", stage: "delivery_gate", message: `Teslim kararı: ${deliveryGate.status}.` });
 
   emit({
     type: "orchestrator_message",
@@ -611,42 +656,6 @@ export async function runOrchestra(
 // ─────────────────────────────────────────────────────────────
 // HELPERS
 // ─────────────────────────────────────────────────────────────
-
-function buildDocumentContext(docs: VaultDocument[]): {
-  summary: string;
-  full: string;
-} {
-  if (docs.length === 0) {
-    return { summary: "(belge yok)", full: "" };
-  }
-  const summary = docs
-    .map(
-      (d, i) =>
-        `${i + 1}. [${d.category ?? "belge"}] ${d.filename} — ${
-          d.summary ?? "özet yok"
-        }`
-    )
-    .join("\n");
-
-  // Dinamik bütçe: toplam 100K karakter, belge başı dağıt
-  const TOTAL_CHAR_BUDGET = 100_000;
-  const readyDocs = docs.filter((d) => d.extractedText && d.extractedText.length > 50);
-  const perDocBudget = readyDocs.length > 0
-    ? Math.floor(TOTAL_CHAR_BUDGET / readyDocs.length)
-    : 0;
-
-  const full = docs
-    .map((d, i) => {
-      const text = d.extractedText ?? d.summary ?? "";
-      const truncated = text.length > perDocBudget
-        ? text.slice(0, perDocBudget) +
-          `\n\n[... belgenin devamı kesildi (${text.length} char → ${perDocBudget})]`
-        : text;
-      return `\n\n### Belge ${i + 1}: ${d.filename} (${d.category ?? "diğer"})\nKaynak: ${d.modelUsed ?? "?"} · ${d.pageCount ?? "?"} sayfa · ${text.length} karakter\n\n${truncated}`;
-    })
-    .join("");
-  return { summary, full };
-}
 
 function buildRound1Prompt(
   agentId: AgentId,

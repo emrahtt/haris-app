@@ -1,0 +1,18 @@
+# Vercel ignore
+.env.local
+.env*.local
+node_modules
+.next
+out
+build
+coverage
+*.log
+.DS_Store
+.git
+.vscode
+.idea
+
+# Workspace dosyaları
+PHASE-*.md
+MIGRATIONS-LOG.md
+scripts/test-*.ts

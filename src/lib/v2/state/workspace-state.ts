@@ -8,6 +8,7 @@
 
 import { Annotation } from "@langchain/langgraph";
 import type { AgentId } from "../orchestra/agents";
+import type { ConflictRecord, DeliveryGate, LegalClaim, RevisionLog } from "../orchestra/evidence-model";
 
 export type RoundNumber = 1 | 2 | 3;
 
@@ -164,8 +165,24 @@ export const WorkspaceAnnotation = Annotation.Root({
   }),
   qualityReport: Annotation<{
     paragraphs: Array<{ index: number; category: "gerekli" | "nüans" | "doldurma"; score: number; reason: string }>;
-    summary: { gerekli: number; nuans: number; doldurma: number; kalite_skoru: number };
+    summary: { gerekli: number; nuans: number; doldurma: number; kalite_skoru: number; factualAccuracy?: number; legalCorrectness?: number; evidenceCompleteness?: number; persuasivenessScore?: number; criticalIssues?: string[] };
   } | null>({
+    reducer: (_, next) => next,
+    default: () => null,
+  }),
+  claims: Annotation<LegalClaim[]>({
+    reducer: (_, next) => next,
+    default: () => [],
+  }),
+  conflictsLedger: Annotation<ConflictRecord[]>({
+    reducer: (current, next) => [...current, ...next],
+    default: () => [],
+  }),
+  revisionLog: Annotation<RevisionLog[]>({
+    reducer: (current, next) => [...current, ...next],
+    default: () => [],
+  }),
+  deliveryGate: Annotation<DeliveryGate | null>({
     reducer: (_, next) => next,
     default: () => null,
   }),

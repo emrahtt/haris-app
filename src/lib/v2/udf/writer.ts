@@ -16,6 +16,15 @@
  */
 
 import JSZip from "jszip";
+import { readUdf } from "./reader";
+
+export interface UdfValidationResult {
+  valid: boolean;
+  textLength: number;
+  paragraphCount: number;
+  errors: string[];
+  warnings: string[];
+}
 
 export interface UdfWriteOptions {
   /** Düz metin içerik (Markdown sentaksından çıkarılmış olmalı) */
@@ -63,17 +72,51 @@ export async function writeUdf(opts: UdfWriteOptions): Promise<Buffer> {
 }
 
 /**
+ * Üretilmiş UDF'yi tekrar okuyarak ZIP/XML ve içerik bütünlüğünü doğrular.
+ * UYAP şemasının tüm varyantlarını garanti etmez; ancak bozuk veya eksik çıktıyı
+ * kullanıcıya indirmeden önce yakalar.
+ */
+export async function validateUdfBuffer(
+  buffer: Buffer,
+  expectedText?: string
+): Promise<UdfValidationResult> {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const parsed = await readUdf(buffer);
+
+  if (parsed.error) errors.push(parsed.error);
+  if (!parsed.contentXml) errors.push("content.xml doğrulanamadı.");
+  if (!parsed.text.trim()) errors.push("UDF içeriği boş.");
+
+  const expected = expectedText ? markdownToPlainText(expectedText) : undefined;
+  if (expected && parsed.text !== expected) {
+    errors.push("UDF'den geri okunan metin, kaynak metinle birebir eşleşmiyor.");
+  }
+  if (!parsed.hasSignature) {
+    warnings.push("Bu çıktı elektronik imza içermiyor; UYAP'a yüklemeden önce imza gereksinimleri kontrol edilmelidir.");
+  }
+
+  return {
+    valid: errors.length === 0,
+    textLength: parsed.text.length,
+    paragraphCount: parsed.text.split(/\\n\\s*\\n/).filter(Boolean).length,
+    errors,
+    warnings,
+  };
+}
+
+/**
  * Markdown sentaksını sade metne çevirir.
  * UDF text içerikte markdown render etmez, sade satır metni bekler.
  */
 function markdownToPlainText(md: string): string {
   return md
     .replace(/<!--[\s\S]*?-->/g, "") // HTML yorumlarını kaldır (örn. <!-- src:maddi_hukuk -->)
+    .replace(/```([\s\S]*?)```/g, "$1") // code blocks: içeriği koru, işaretleri kaldır
     .replace(/^#{1,6}\s+/gm, "") // Markdown başlıklarını kaldır
     .replace(/\*\*([^*]+)\*\*/g, "$1") // bold
     .replace(/\*([^*]+)\*/g, "$1") // italic
     .replace(/`([^`]+)`/g, "$1") // inline code
-    .replace(/```[\s\S]*?```/g, "") // code blocks
     .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1") // links: keep text
     .replace(/^\s*[-*+]\s+/gm, "• ") // list bullets
     .replace(/^\s*\d+\.\s+/gm, (match) => match) // numbered lists keep as is
@@ -107,16 +150,14 @@ function buildContentXml(text: string, _title?: string): string {
 
   // Paragrafları XML <paragraph> elementlerine çevir (UYAP editörü gerektiriyor)
   const paragraphs = text.split(/\n\s*\n/).filter((p) => p.trim().length > 0);
+  let offset = 0;
   const elements = paragraphs
     .map((p) => {
-      const len = p.length;
-      // XML escape paragraph içeriği
-      const escaped = p
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;");
+      const startOffset = offset;
+      const length = p.length;
+      offset += length + 2;
       return `        <paragraph Alignment="0" LeftIndent="0" RightIndent="0" FirstLineIndent="0" LineSpacing="1.0" SpaceAbove="0" SpaceBelow="6">
-            <content startOffset="0" length="${len}" />
+            <content startOffset="${startOffset}" length="${length}" />
         </paragraph>`;
     })
     .join("\n");

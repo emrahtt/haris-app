@@ -4,6 +4,11 @@
  * Dikey işlem çubuğu — Matter (sağ) panelin soluna yapışık.
  * Yatay üst çubuğun 90° döndürülmüş hali: "İşlemi Başlat" en altta,
  * diğer menüler yukarı doğru.
+ *
+ * FAZ 16.6 EKLEMELERİ:
+ *   - Çalışırken dönen animasyon + hangi aşamada olduğu + geçen süre
+ *   - ⏹ Durdur butonu (aşamalı orkestra sayesinde gerçekten durdurur)
+ *   - "stopped" durumu
  */
 
 import { V1Bridge } from "@/components/v2/layout/v1-bridge";
@@ -15,10 +20,23 @@ interface Props {
   isOrchestrating: boolean;
   documentsCount: number;
   onStart: () => void;
+  /** Faz 16.6: süreci durdur */
+  onStop?: () => void;
+  /** Faz 16.6: şu an çalışan aşama (round1 | round2 | draft | quality) */
+  currentStage?: string;
+  /** Faz 16.6: toplam geçen saniye */
+  elapsedSec?: number;
   onTabular: () => void;
   onShare: () => void;
   onSettings: () => void;
 }
+
+const STAGE_LABELS: Record<string, string> = {
+  round1: "TUR 1/4 · Analiz",
+  round2: "TUR 2/4 · Eleştiri",
+  draft: "TUR 3/4 · Dilekçe",
+  quality: "TUR 4/4 · Kalite",
+};
 
 function VerticalLabel({ children }: { children: React.ReactNode }) {
   return (
@@ -34,46 +52,120 @@ function VerticalLabel({ children }: { children: React.ReactNode }) {
   );
 }
 
+/** Dönen halka animasyonu (çalışıyor göstergesi) */
+function Spinner() {
+  return (
+    <span
+      className="block w-4 h-4 rounded-full animate-spin"
+      style={{
+        border: "2px solid rgba(201,169,97,0.25)",
+        borderTopColor: "#C9A961",
+      }}
+    />
+  );
+}
+
 export function OrchestraRail({
   workspaceId,
   orchestraStatus,
   isOrchestrating,
   documentsCount,
   onStart,
+  onStop,
+  currentStage,
+  elapsedSec = 0,
   onTabular,
   onShare,
   onSettings,
 }: Props) {
-  const canStart =
-    !isOrchestrating &&
-    orchestraStatus !== "running" &&
-    documentsCount > 0;
+  const isRunning = isOrchestrating || orchestraStatus === "running";
+  const canStart = !isRunning && documentsCount > 0;
 
   const startLabel =
-    orchestraStatus === "running"
-      ? "Çalışıyor…"
-      : orchestraStatus === "completed"
-        ? "Yeniden Başlat"
-        : "İşlemi Başlat";
+    orchestraStatus === "completed"
+      ? "Yeniden Başlat"
+      : orchestraStatus === "error"
+        ? "Tekrar Dene"
+        : orchestraStatus === "stopped"
+          ? "Devam Et"
+          : "İşlemi Başlat";
+
+  const stageLabel = currentStage
+    ? STAGE_LABELS[currentStage] ?? currentStage
+    : "Hazırlanıyor";
 
   return (
     <div className="flex flex-col-reverse items-stretch w-11 shrink-0 border-l border-[#C9A961]/40 bg-[#07101c]">
-      <button
-        type="button"
-        onClick={onStart}
-        disabled={!canStart}
-        title={startLabel}
-        className={`flex-none flex items-center justify-center py-3 min-h-[7.5rem] transition ${
-          canStart
-            ? "bg-[#C9A961] text-[#0A1628] hover:bg-[#e6c479]"
-            : "bg-white/5 text-slate-500 cursor-not-allowed"
-        }`}
-      >
-        <VerticalLabel>
-          {orchestraStatus === "running" ? "⏳ " : "🎼 "}
-          {startLabel}
-        </VerticalLabel>
-      </button>
+      {/* ── EN ALT: Başlat / Durdur ───────────────────────── */}
+      {isRunning ? (
+        <button
+          type="button"
+          onClick={onStop}
+          disabled={!onStop}
+          title="Süreci durdur"
+          className="flex-none flex items-center justify-center py-3 min-h-[7.5rem] transition bg-red-600/90 text-white hover:bg-red-500 disabled:opacity-50"
+        >
+          <VerticalLabel>⏹ Durdur</VerticalLabel>
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={onStart}
+          disabled={!canStart}
+          title={startLabel}
+          className={`flex-none flex items-center justify-center py-3 min-h-[7.5rem] transition ${
+            canStart
+              ? "bg-[#C9A961] text-[#0A1628] hover:bg-[#e6c479]"
+              : "bg-white/5 text-slate-500 cursor-not-allowed"
+          }`}
+        >
+          <VerticalLabel>🎼 {startLabel}</VerticalLabel>
+        </button>
+      )}
+
+      {/* ── Çalışıyor göstergesi: dönen halka + aşama + süre ── */}
+      {isRunning && (
+        <div
+          className="flex-none flex flex-col items-center justify-center gap-2 py-3 border-t border-white/10 bg-[#C9A961]/5"
+          title={`${stageLabel} · ${elapsedSec} saniye`}
+        >
+          <Spinner />
+          <VerticalLabel>
+            {stageLabel} · {elapsedSec}sn
+          </VerticalLabel>
+        </div>
+      )}
+
+      {/* ── Tamamlandı / hata durumu rozeti ───────────────── */}
+      {!isRunning &&
+        (orchestraStatus === "completed" ||
+          orchestraStatus === "error" ||
+          orchestraStatus === "stopped") && (
+          <div
+            className={`flex-none flex items-center justify-center py-2 border-t border-white/10 ${
+              orchestraStatus === "completed"
+                ? "text-emerald-300"
+                : orchestraStatus === "error"
+                  ? "text-red-300"
+                  : "text-slate-400"
+            }`}
+            title={
+              orchestraStatus === "completed"
+                ? "Süreç tamamlandı"
+                : orchestraStatus === "error"
+                  ? "Süreç hatayla durdu — sohbet akışındaki mesaja bak"
+                  : "Süreç durduruldu"
+            }
+          >
+            <VerticalLabel>
+              {orchestraStatus === "completed"
+                ? "✓ Tamamlandı"
+                : orchestraStatus === "error"
+                  ? "✕ Hata"
+                  : "⏹ Durduruldu"}
+            </VerticalLabel>
+          </div>
+        )}
 
       <button
         type="button"

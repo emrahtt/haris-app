@@ -15,6 +15,8 @@ import {
   Settings,
   LogOut,
   CreditCard,
+  Cpu,
+  Layers,
   type LucideIcon,
 } from "lucide-react";
 
@@ -32,6 +34,7 @@ const SECTIONS: { label: string; items: NavItem[] }[] = [
       { href: "/dashboard", label: "Gösterge Paneli", icon: Home },
       { href: "/cases", label: "Davalarım", icon: Folder, badge: "6" },
       { href: "/agents", label: "AI Ajan Paneli", icon: Users, badge: "Canlı" },
+      { href: "/v2", label: "Matter Workspace (v2)", icon: Layers, badge: "Yeni" },
     ],
   },
   {
@@ -46,6 +49,7 @@ const SECTIONS: { label: string; items: NavItem[] }[] = [
     label: "Hesap",
     items: [
       { href: "/settings", label: "Ayarlar", icon: Settings },
+      { href: "/settings/model-strategy", label: "Model Stratejisi", icon: Cpu, badge: "AI" },
       { href: "/pricing", label: "Plan & Yükselt", icon: CreditCard },
     ],
   },

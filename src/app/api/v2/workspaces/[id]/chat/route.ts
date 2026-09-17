@@ -33,14 +33,21 @@ import {
 } from "@/lib/v2/workspace/db";
 import { AGENTS, type AgentId } from "@/lib/v2/orchestra/agents";
 import { MODEL_REGISTRY } from "@/lib/v2/providers";
+import { checkAiGate, recordAiCall } from "@/lib/billing/quota-gate";
+import { resolveRoleModel } from "@/lib/v2/strategy/db";
+import { callProvider } from "@/lib/v2/providers/clients";
+import { withPlatformContext } from "@/lib/v2/orchestra/platform-prompt";
+import { findModel } from "@/lib/v2/providers/catalog";
 import { callAnthropicOptimized } from "@/lib/v2/providers/anthropic-client";
+import {
+  friendlyProviderError,
+  getFallbackSpec,
+  isQuotaError,
+} from "@/lib/v2/providers/fallback";
 import { getMatterMemory, readScratchpad } from "@/lib/v2/memory/db";
 import { prepareChatMemory } from "@/lib/v2/memory/summarizer";
 import { buildMemoryPromptBlock } from "@/lib/v2/memory/prompt-builder";
 import { retrieve, formatRetrievalForPrompt } from "@/lib/v2/rag/retriever";
-import { assertUserCanUseAi, consumeAiCall } from "@/lib/billing/gate";
-import type { RetrievalResult } from "@/lib/v2/rag/types";
-import type { VaultDocument } from "@/lib/v2/state/workspace-state";
 import type { AnthropicMessage } from "@/lib/v2/providers/anthropic-client";
 
 export const runtime = "nodejs";
@@ -58,6 +65,19 @@ export async function POST(
 ) {
   const { id } = await params;
   const userId = await getCurrentUserId();
+
+  // Faz 16.5: kota kapısı + sahip muafiyeti (HARIS_OWNER_USER_IDS)
+  const gate = await checkAiGate(userId);
+  if (!gate.allowed) {
+    console.warn(`[KOTA] chat engellendi user=${userId} plan=${gate.planId} ${gate.used}/${gate.limit}`);
+    return NextResponse.json(
+      { error: gate.reason, reply: gate.reason, quota: {
+          plan: gate.planName, used: gate.used, limit: gate.limit, remaining: 0 } },
+      { status: gate.status }
+    );
+  }
+  recordAiCall(userId);
+
   const body = await req.json().catch(() => ({}));
   const { content, mentionedAgents = [] } = body as {
     content: string;
@@ -66,14 +86,6 @@ export async function POST(
 
   if (!content?.trim()) {
     return NextResponse.json({ error: "İçerik boş" }, { status: 400 });
-  }
-
-  const quota = await assertUserCanUseAi(userId, 1);
-  if (!quota.allowed) {
-    return NextResponse.json(
-      { error: quota.reason, reply: quota.reason, quota },
-      { status: 402 }
-    );
   }
 
   const ws = await getWorkspace(id, userId);
@@ -127,7 +139,25 @@ export async function POST(
   const targetAgentId: AgentId =
     mentionedAgents.length > 0 ? mentionedAgents[0] : "orchestrator";
   const agent = AGENTS[targetAgentId];
-  const modelInfo = MODEL_REGISTRY[agent.modelRole];
+  // FAZ 16: rol → model çözümlemesi
+  // Öncelik: kullanıcının aktif Model Stratejisi > Vercel env > kod varsayılanı
+  const resolvedModel = await resolveRoleModel(agent.modelRole, userId);
+  const registryInfo = MODEL_REGISTRY[agent.modelRole];
+  const modelInfo = {
+    ...registryInfo,
+    provider: resolvedModel.provider,
+    modelId: resolvedModel.modelId,
+    costPer1MInput: resolvedModel.costPer1MInput,
+    costPer1MOutput: resolvedModel.costPer1MOutput,
+    supportsEffort: registryInfo.supportsEffort || !!resolvedModel.effort,
+    displayName:
+      findModel(resolvedModel.modelId)?.name ?? registryInfo.displayName,
+  };
+  // Sohbet yanıtı token tavanı (dilekçe Canvas'ta 16000 ile üretilir, burada değil)
+  const chatMaxTokens = Math.max(
+    1000,
+    parseInt(process.env.HARIS_CHAT_MAX_TOKENS ?? "8000", 10) || 8000
+  );
 
   // Memory prompt bloğu
   const memoryPromptBlock = buildMemoryPromptBlock(
@@ -204,7 +234,8 @@ ${truncated}
     : "(henüz ajan çıktısı yok)";
 
   // ─── STABLE PREFIX (cache'lenecek) ─────────────────────
-  const systemPrompt = agent.systemPrompt;
+  // Faz 16.5: platform kimliği + Canvas/export yetenekleri (ajan "Canvas'a yazamıyorum" demesin)
+  const systemPrompt = withPlatformContext(agent.systemPrompt);
 
   const stableContext = `# WORKSPACE BAĞLAMI
 
@@ -266,14 +297,47 @@ KURALLAR:
   try {
     if (modelInfo.provider === "anthropic") {
       // Fable 5 + cache + effort
-      const result = await callAnthropicOptimized({
-        role: agent.modelRole,
-        cacheablePrefix,
-        userMessage: content,
-        conversationHistory: historyForApi,
-        maxTokens: 4000,
-        effort: modelInfo.supportsEffort ? "medium" : undefined,
-      });
+      type OptimizedResult = Awaited<ReturnType<typeof callAnthropicOptimized>>;
+      let result: OptimizedResult;
+      try {
+        result = await callAnthropicOptimized({
+          role: agent.modelRole,
+          cacheablePrefix,
+          userMessage: content,
+          conversationHistory: historyForApi,
+          maxTokens: chatMaxTokens,
+          effort: modelInfo.supportsEffort ? "medium" : undefined,
+        });
+      } catch (anthropicErr) {
+        // Faz 14.1 — Anthropic kredisi bittiyse otomatik OpenAI'a düş
+        const fb = isQuotaError(anthropicErr) ? getFallbackSpec("anthropic") : null;
+        if (!fb) throw anthropicErr;
+        console.warn(
+          `[CHAT FALLBACK] ${targetAgentId}: anthropic:${modelInfo.modelId} kotası bitti → ${fb.provider}:${fb.modelId}`
+        );
+        const fbResult = await callOpenAI(
+          fb.modelId,
+          systemPrompt,
+          cacheablePrefix + "\n\n---\n\n" + content,
+          fb.costPer1MInput,
+          fb.costPer1MOutput
+        );
+        result = {
+          content: fbResult.content,
+          usage: {
+            inputTokens: fbResult.tokensUsed.input,
+            outputTokens: fbResult.tokensUsed.output,
+            cacheCreationTokens: 0,
+            cacheReadTokens: 0,
+          },
+          cost: fbResult.cost,
+          cacheSavings: 0,
+          cacheHitRate: 0,
+          modelUsed: `${fb.modelId} (yedek)`,
+          stopReason: "end_turn",
+          rawResponse: fbResult.rawResponse,
+        };
+      }
 
       // Yanıtı kaydet
       await saveAgentMessage(id, userId, {
@@ -286,11 +350,8 @@ KURALLAR:
         type: "agent_chat",
       });
 
-      await consumeAiCall(userId, 1);
-      const citedReply = appendFootnotes(result.content, ragResult, documents);
-
       return NextResponse.json({
-        reply: citedReply,
+        reply: result.content,
         rawResponse: result.rawResponse,
         tokensUsed: {
           input: result.usage.inputTokens,
@@ -351,14 +412,77 @@ KURALLAR:
       });
     }
 
-    // OpenAI fallback (drafter için değişebilir)
-    const result = await callOpenAI(
-      modelInfo.modelId,
-      systemPrompt,
-      cacheablePrefix + "\n\n---\n\n" + content,
-      modelInfo.costPer1MInput,
-      modelInfo.costPer1MOutput
-    );
+    // FAZ 16: Gemini / Meta dalı
+    if (modelInfo.provider === "gemini" || modelInfo.provider === "meta") {
+      const direct = await callProvider({
+        provider: modelInfo.provider,
+        model: modelInfo.modelId,
+        system: systemPrompt,
+        user: cacheablePrefix + "\n\n---\n\n" + content,
+        maxTokens: chatMaxTokens,
+        effort: resolvedModel.effort,
+        costIn: modelInfo.costPer1MInput,
+        costOut: modelInfo.costPer1MOutput,
+      });
+
+      await saveAgentMessage(id, userId, {
+        id: uuid(),
+        from: targetAgentId === "orchestrator" ? "orchestrator" : targetAgentId,
+        to: "user",
+        round: (ws.current_round || 1) as 1 | 2 | 3,
+        timestamp: new Date().toISOString(),
+        content: direct.content,
+        type: "agent_chat",
+      });
+
+      return NextResponse.json({
+        reply: direct.content,
+        rawResponse: direct.rawResponse,
+        tokensUsed: direct.tokensUsed,
+        cost: direct.cost,
+        agent: {
+          id: targetAgentId,
+          displayName: agent.displayName,
+          model: modelInfo.displayName,
+        },
+        modelSource: resolvedModel.source,
+      });
+    }
+
+    // OpenAI dalı (drafter/opposition için)
+    let result: Awaited<ReturnType<typeof callOpenAI>>;
+    try {
+      result = await callOpenAI(
+        modelInfo.modelId,
+        systemPrompt,
+        cacheablePrefix + "\n\n---\n\n" + content,
+        modelInfo.costPer1MInput,
+        modelInfo.costPer1MOutput
+      );
+    } catch (openaiErr) {
+      // Faz 14.1 — OpenAI kotası bittiyse otomatik Anthropic'e düş
+      const fb = isQuotaError(openaiErr) ? getFallbackSpec("openai") : null;
+      if (!fb) throw openaiErr;
+      console.warn(
+        `[CHAT FALLBACK] ${targetAgentId}: openai:${modelInfo.modelId} kotası bitti → ${fb.provider}:${fb.modelId}`
+      );
+      const fbResult = await callAnthropicOptimized({
+        role: agent.modelRole,
+        cacheablePrefix,
+        userMessage: content,
+        conversationHistory: historyForApi,
+        maxTokens: chatMaxTokens,
+      });
+      result = {
+        content: fbResult.content,
+        tokensUsed: {
+          input: fbResult.usage.inputTokens,
+          output: fbResult.usage.outputTokens,
+        },
+        cost: fbResult.cost,
+        rawResponse: fbResult.rawResponse,
+      };
+    }
 
     await saveAgentMessage(id, userId, {
       id: uuid(),
@@ -371,7 +495,7 @@ KURALLAR:
     });
 
     return NextResponse.json({
-      reply: appendFootnotes(result.content, ragResult, documents),
+      reply: result.content,
       rawResponse: result.rawResponse,
       tokensUsed: result.tokensUsed,
       cost: result.cost,
@@ -425,8 +549,10 @@ KURALLAR:
 
     // Kullanıcı dostu mesaj
     let userMsg = errStr;
-    if (errStr.includes("404")) {
-      userMsg = `❌ Model "${modelInfo.modelId}" ${modelInfo.provider === "anthropic" ? "OneProvider'da" : "OpenAI'da"} bulunamadı.\n\nÇözüm: .env.local'de HARIS_${agent.modelRole.toUpperCase()}_MODEL değerini kontrol et. Çalışan modeller: claude-opus-4-8, claude-opus-4-7, claude-opus-4-6, claude-sonnet-4-6.`;
+    if (isQuotaError(errStr)) {
+      userMsg = friendlyProviderError(errStr, modelInfo.provider, modelInfo.modelId);
+    } else if (errStr.includes("404")) {
+      userMsg = `❌ Model "${modelInfo.modelId}" ${modelInfo.provider === "anthropic" ? "OneProvider'da" : "OpenAI'da"} bulunamadı.\n\nÇözüm: .env.local'de HARIS_${agent.modelRole.toUpperCase()}_MODEL değerini kontrol et. Çalışan modeller (2026): claude-opus-5, claude-sonnet-5, claude-fable-5, claude-opus-4-8.`;
     } else if (errStr.includes("401") || errStr.includes("403")) {
       userMsg = `🔑 API key geçersiz veya süresi dolmuş (${modelInfo.provider}).\n\nÇözüm: .env.local'de ANTHROPIC_API_KEY veya OPENAI_API_KEY kontrol et.`;
     } else if (errStr.includes("429")) {
@@ -457,6 +583,14 @@ KURALLAR:
 // ─────────────────────────────────────────────────────────
 // OpenAI fallback (drafter/embedding vs. için)
 // ─────────────────────────────────────────────────────────
+
+/** Sohbet yanıtı token tavanı — HARIS_CHAT_MAX_TOKENS (varsayılan 8000) */
+function chatTokenLimit(): number {
+  return Math.max(
+    1000,
+    parseInt(process.env.HARIS_CHAT_MAX_TOKENS ?? "8000", 10) || 8000
+  );
+}
 
 async function callOpenAI(
   model: string,
@@ -490,8 +624,8 @@ async function callOpenAI(
       ...(model.startsWith("gpt-5") ||
       model.startsWith("o1") ||
       model.startsWith("o3")
-        ? { max_completion_tokens: 4000 }
-        : { max_tokens: 4000 }),
+        ? { max_completion_tokens: chatTokenLimit() }
+        : { max_tokens: chatTokenLimit() }),
       messages: [
         { role: "system", content: system },
         { role: "user", content: user },
@@ -509,27 +643,4 @@ async function callOpenAI(
     cost: (ti * costIn + to * costOut) / 1_000_000,
     rawResponse: data,
   };
-}
-
-function appendFootnotes(
-  reply: string,
-  rag: RetrievalResult,
-  documents: VaultDocument[]
-): string {
-  if (!rag || rag.totalHits === 0) return reply;
-  const lines: string[] = ["", "---", "Kaynaklar:"];
-  let n = 1;
-  for (const h of rag.matter.slice(0, 6)) {
-    const name =
-      documents.find((d) => d.id === h.documentId)?.filename ?? "Belge";
-    lines.push(
-      `[${n++}] ${name}${h.pageNumber ? ` s.${h.pageNumber}` : ""} — ${h.content.slice(0, 120)}`
-    );
-  }
-  for (const h of rag.global.slice(0, 4)) {
-    lines.push(
-      `[${n++}] ${h.lawName ?? h.court ?? h.title}${h.articleNo ? ` m.${h.articleNo}` : ""}`
-    );
-  }
-  return `${reply}\n${lines.join("\n")}`;
 }

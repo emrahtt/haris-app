@@ -20,6 +20,7 @@ export type ExtractionMethod =
   | "claude_vision"
   | "openai_vision"
   | "gemini_vision"
+  | "meta_vision"
   | "best_of_3";
 
 interface Props {
@@ -48,74 +49,90 @@ const METHODS: MethodOption[] = [
     id: "auto",
     emoji: "🤖",
     label: "Akıllı (Otomatik)",
-    desc: "Önce ücretsiz metin çıkarır. Taranmış veya zayıf PDF ise Claude Vision'a düşer.",
-    costEstimate: "$0 – $0.10 / belge",
+    desc: "Belgeyi tanır, uygun modele yönlendirir. Taranmış PDF'te önce Muse Spark 1.3 dener; olmazsa OpenAI Vision'a düşer.",
+    costEstimate: "~$0 – $0.05 / belge",
     speed: "Hızlı",
     quality: "Orta",
     qualityColor: "text-emerald-300",
     recommended: true,
-    pros: ["Çoğu dilekçe/karar için yeterli", "Düşük maliyet"],
-    cons: ["Karmaşık tablo veya damgalı evrakta yetersiz kalabilir"],
+    pros: ["Karar sizin değil", "Genelde en dengeli", "En ucuz sağlıklı sonuç"],
+    cons: ["Karmaşık tablo/imzalı belgede kısıtlı"],
   },
   {
     id: "fast",
     emoji: "⚡",
-    label: "Hızlı (AI yok)",
-    desc: "Sadece pdf-parse / Word okur. İnternet ve AI çağrısı yok.",
-    costEstimate: "$0",
-    speed: "Anlık",
+    label: "Hızlı (AI Yok)",
+    desc: "Sadece PDF/Word metin çıkarır. AI çağrısı yok, ücretsiz.",
+    costEstimate: "$0 (bedava)",
+    speed: "Anlık (1-2 sn)",
     quality: "Düşük",
     qualityColor: "text-slate-400",
-    pros: ["Bedava", "1–2 saniye"],
-    cons: ["Taranmış PDF okunmaz", "Tablo/damga kaybolur"],
+    pros: ["Tamamen ücretsiz", "Anında", "Zaten okunabilir PDF için ideal"],
+    cons: ["Taranmış (scan) PDF'i okumaz", "Tablolar bozulur", "Damga/imza kaçar"],
+  },
+  {
+    id: "meta_vision",
+    emoji: "🟠",
+    label: "Muse Spark 1.3 Vision (VARSAYILAN)",
+    desc: "Meta'nın en yetenekli modeli. Yüksek muhakeme seviyesiyle okur.",
+    costEstimate: "$0.01 – $0.10 / belge",
+    speed: "Orta (30-90 sn)",
+    quality: "En yüksek",
+    qualityColor: "text-orange-300",
+    pros: [
+      "Yüksek reasoning ile okuma (reasoning_effort: high)",
+      "PDF + görsel + tablo desteği",
+      "Başarısız olursa otomatik OpenAI Vision'a düşer",
+    ],
+    cons: ["MODEL_API_KEY gerek", "Meta API önizleme aşamasında"],
   },
   {
     id: "claude_vision",
     emoji: "🟣",
-    label: "Claude Vision (Opus 5)",
-    desc: "Resmi Anthropic API, native PDF. Hukuk metni ve Türkçe için güçlü.",
-    costEstimate: "$0.01 – $0.12 / belge",
-    speed: "Orta (30–90 sn)",
-    quality: "Yüksek",
+    label: "Claude Vision (Opus 5 / Fable 5)",
+    desc: "En güçlü hukuk modeli. Türkçe & karmaşık metin en iyi.",
+    costEstimate: "$0.02 – $0.20 / belge",
+    speed: "Orta (30-90 sn)",
+    quality: "En yüksek",
     qualityColor: "text-violet-300",
-    pros: ["Hukuk dili", "Türkçe karakter", "Resmi API"],
-    cons: ["Çok sayfalı evrakta süre uzar"],
+    pros: ["Türk hukuk terminolojisinde en iyi", "Uzun belgeleri anlar", "El yazısı bile"],
+    cons: ["Sayfa başı maliyet", "Anthropic bakiyesi gerek"],
   },
   {
     id: "openai_vision",
     emoji: "🟢",
-    label: "GPT Vision (5.6 Sol)",
-    desc: "PDF sayfa sayfa görsele çevrilir, GPT-5.6-sol okur. Damga ve tablo için güvenilir.",
+    label: "GPT-5.6 Terra Vision",
+    desc: "gpt-5.6-terra. Sağlam OCR + tablo desteği, dengeli maliyet.",
     costEstimate: "$0.03 – $0.30 / belge",
-    speed: "Orta (30–90 sn)",
+    speed: "Orta (30-90 sn)",
     quality: "Yüksek",
     qualityColor: "text-emerald-300",
-    pros: ["Taranmış evrak", "Tablo / imza", "Kanıtlanmış hat"],
-    cons: ["Sayfa başına maliyet"],
+    pros: ["Sayfa sayfa hassas okur", "Tablolar için güvenli", "Damga/imza tespit"],
+    cons: ["Anthropic'e göre biraz pahalı", "OpenAI bakiyesi gerek"],
   },
   {
     id: "gemini_vision",
     emoji: "🔵",
-    label: "Gemini 2.5 Pro Vision",
-    desc: "Türkçe + tablo en iyi fiyat/kalite. Tutanak ve fatura için önerilir.",
-    costEstimate: "$0.001 – $0.03 / belge",
-    speed: "Hızlı (15–60 sn)",
-    quality: "En yüksek",
+    label: "Gemini 3.8 Flash Vision",
+    desc: "gemini-3.8-flash (2 Eyl 2026). Ucuz, hızlı, Türkçe karakter mükemmel.",
+    costEstimate: "$0.001 – $0.02 / belge (EN UCUZ)",
+    speed: "Hızlı (15-45 sn)",
+    quality: "Yüksek",
     qualityColor: "text-sky-300",
-    pros: ["En ucuz", "Türkçe karakter", "Tablo"],
-    cons: ["GEMINI_API_KEY gerekir"],
+    pros: ["En ucuz Vision modeli", "Türkçe karakter kusursuz", "Tablolar çok iyi"],
+    cons: ["GEMINI_API_KEY gerek", "El yazısında Claude'dan geride"],
   },
   {
     id: "best_of_3",
     emoji: "👑",
-    label: "Üçlü karşılaştırma",
-    desc: "Claude + GPT + Gemini aynı anda çalışır; en uzun ve tutarlı metin seçilir.",
+    label: "Best of 3 (En Güvenli)",
+    desc: "Claude + GPT + Gemini paralel çalışır, en iyisini seçer.",
     costEstimate: "$0.05 – $0.50 / belge",
-    speed: "Yavaş (60–180 sn)",
+    speed: "Yavaş (60-180 sn)",
     quality: "En yüksek",
     qualityColor: "text-[#C9A961]",
-    pros: ["Hata payı en düşük", "Kritik evrak"],
-    cons: ["3 kat maliyet ve süre"],
+    pros: ["Hata payı sıfır", "Kritik belgeler için ideal", "3 model uyumlu ise emin ol"],
+    cons: ["3 kat maliyet", "3 kat yavaş", "3 API çağrısı"],
   },
 ];
 
@@ -171,9 +188,10 @@ export function MethodPicker({
         </div>
 
         <div className="text-xs text-slate-400 mb-3 p-2 rounded border border-amber-500/20 bg-amber-500/5">
-          💡 <strong>Kısa rehber:</strong> Düz metin Word/PDF → Hızlı.
-          Tutanak, tablo, damga → Gemini 2.5 Pro. Kritik evrak → Üçlü
-          karşılaştırma. Varsayılan Akıllı çoğu dosyada yeter.
+          💡 <strong>Hukuk belgesi mi?</strong> Tablolar, damgalar, imzalar
+          önemliyse <strong>Muse Spark 1.3</strong> (varsayılan) veya{" "}
+          <strong>Best of 3</strong> seçin. Sadece düz metin için{" "}
+          <strong>Hızlı</strong> yeter.
         </div>
 
         {/* Method kartları */}

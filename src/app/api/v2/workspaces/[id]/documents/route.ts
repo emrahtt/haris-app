@@ -24,8 +24,6 @@ import { extractAndStoreEntities } from "@/lib/v2/memory/extractor";
 import { indexDocument, logIndexingStats } from "@/lib/v2/rag/indexer";
 import { uploadDocumentToStorage } from "@/lib/v2/storage/upload";
 import type { VaultDocument } from "@/lib/v2/state/workspace-state";
-import { assertUserCanUseAi, consumeAiCall } from "@/lib/billing/gate";
-import { incrementUsage } from "@/lib/billing/subscriptions-db";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -36,6 +34,7 @@ const VALID_METHODS: ExtractionMethod[] = [
   "claude_vision",
   "openai_vision",
   "gemini_vision",
+  "meta_vision",
   "best_of_3",
 ];
 
@@ -62,14 +61,6 @@ export async function POST(
 
   if (files.length === 0) {
     return NextResponse.json({ error: "Dosya yok" }, { status: 400 });
-  }
-
-  const needsAi = extractionMethod !== "fast";
-  if (needsAi) {
-    const quota = await assertUserCanUseAi(userId, files.length);
-    if (!quota.allowed) {
-      return NextResponse.json({ error: quota.reason, quota }, { status: 402 });
-    }
   }
 
   const records: { doc: VaultDocument; buffer: Buffer }[] = [];
@@ -109,9 +100,6 @@ export async function POST(
           buffer,
           extractionMethod
         );
-
-        if (result.usedAI) await consumeAiCall(userId, 1);
-        await incrementUsage("documents_uploaded", 1, userId);
 
         if (!result.text || result.text.length < 10) {
           await updateDocument(id, doc.id, {

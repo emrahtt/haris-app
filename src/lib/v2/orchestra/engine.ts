@@ -16,9 +16,18 @@
 import { uuid } from "../utils/uuid";
 import { AGENTS, type AgentId, suggestAgentsForCase } from "./agents";
 import { getMatterMemory, readScratchpad, writeToScratchpad, upsertMemoryBlock } from "../memory/db";
+import { listAgentOutputs, getLatestPetition } from "../workspace/db";
 import { buildMemoryPromptBlock } from "../memory/prompt-builder";
 import { searchYargitay } from "../tools/bedesten-search";
-import { MODEL_REGISTRY } from "../providers";
+import {
+  friendlyProviderError,
+  getFallbackSpec,
+  isQuotaError,
+} from "../providers/fallback";
+import { callProvider } from "../providers/clients";
+import { resolveRoleModel } from "../strategy/db";
+import { withPlatformContext } from "./platform-prompt";
+import type { ProviderId } from "../providers/catalog";
 import type { VaultDocument } from "../state/workspace-state";
 
 export interface OrchestraContext {
@@ -33,22 +42,42 @@ export interface OrchestraContext {
     qualityMode: "strict" | "flexible";
     checkpointMode: "always_ask" | "ask_on_conflict" | "auto_continue";
     enabledAgents: AgentId[];
+    /** Faz 14.0: mahkeme bilgisi (0014_fuzzy_and_court migration) */
     court?: string;
+    /** Faz 14.0: esas numarası */
     esasNo?: string;
   };
-  /** 2 veya 3: checkpoint sonrası TUR 2/3'ten devam */
-  resumeFromRound?: 1 | 2 | 3;
-  priorOutputs?: Record<AgentId, string>;
   /**
-   * Kullanıcının checkpoint'te verdiği karar/talimat metni.
-   * TUR 3 sentez promptuna "kullanıcı yönlendirmesi" olarak işlenir.
+   * Faz 16.6 — Checkpoint sonrası devam.
+   * resume/route.ts bunu gönderir; orkestra o turdan itibaren çalışır,
+   * önceki turların çıktılarını Supabase'den (agent_runs) geri yükler.
    */
-  userGuidance?: string;
+  resumeFromRound?: 1 | 2 | 3;
   /**
-   * Kullanıcı "yine de devam et" dediyse true olur; belge içeriği
-   * okunamasa bile orkestrayı durdurmadan ilerletir.
+   * Faz 16.6 — resume route'un gönderdiği önceki tur çıktıları.
+   * Tip bilerek geniş tutuldu (unknown): çağıran taraf Record<AgentId,string>,
+   * Partial<...> veya başka bir nesne gönderse de derleme bozulmaz.
+   * Engine içinde normalizePriorOutputs() ile güvenli biçimde okunur.
+   */
+  priorOutputs?: unknown;
+  /**
+   * Faz 16.6 — kullanıcının checkpoint kararı / yönlendirmesi.
+   * resume route gönderir; TUR 3 sentezinde dilekçeye işlenir.
+   */
+  userGuidance?: unknown;
+  /**
+   * Faz 16.6 — "yine de devam et" seçeneği.
+   * resume route gönderir; okunabilir belge içeriği olmasa bile süreci sürdürür.
    */
   forceContinue?: boolean;
+  /**
+   * Faz 16.6 — GÜVENLİK AĞI.
+   * Kullanıcının reposundaki resume/route.ts, OrchestraContext'e bu dosyada
+   * tanımlı olmayan ek alanlar gönderebiliyor (court, esasNo, resumeFromRound,
+   * priorOutputs, userGuidance, forceContinue...). Her seferinde derleme
+   * hatası almamak için ek alanlara izin veriliyor; engine bilmediklerini yok sayar.
+   */
+  [key: string]: unknown;
 }
 
 export type StreamEvent =
@@ -106,7 +135,30 @@ export type StreamEvent =
       quality?: unknown;
     }
   | { type: "completed" }
+  | { type: "stage_complete"; stage: OrchestraStage }
   | { type: "error"; message: string };
+
+/**
+ * FAZ 15 — AŞAMALI ORKESTRA
+ *
+ * Vercel bir fonksiyon çağrısını en fazla 300 saniye (Hobby/Fluid) çalıştırır;
+ * süre dolunca bağlantıyı ÖLDÜRÜR. Heartbeat bunu engellemez (limit, yanıtın
+ * tamamı için geçerli). 12 ajan + 3 tur tek çağrıda 5-10 dakika sürdüğü için
+ * fonksiyon TUR 3'e gelmeden ölüyordu → petition_draft hiç gönderilmiyordu →
+ * Canvas boş kalıyordu. Console'da sadece "[SSE] stream tamamlandı" görünüyordu.
+ *
+ * ÇÖZÜM: Orkestra 4 ayrı HTTP çağrısına bölündü. Her çağrının kendi 300sn
+ * bütçesi var. Aradaki durum Supabase'den (agent_runs / petition_versions)
+ * geri okunur.
+ */
+export type OrchestraStage = "round1" | "round2" | "draft" | "quality" | "all";
+
+export const ORCHESTRA_STAGES: Exclude<OrchestraStage, "all">[] = [
+  "round1",
+  "round2",
+  "draft",
+  "quality",
+];
 
 export type EmitFn = (event: StreamEvent) => void;
 
@@ -124,7 +176,8 @@ const PETITION_LENGTH_INSTRUCTIONS = {
  */
 export async function runOrchestra(
   ctx: OrchestraContext,
-  emit: EmitFn
+  emit: EmitFn,
+  stage: OrchestraStage = "all"
 ): Promise<void> {
   // 0) Matter memory + scratchpad'i çek (her tur boyunca güncellenir)
   const initialMemory = await getMatterMemory(ctx.workspaceId, ctx.userId);
@@ -148,57 +201,6 @@ export async function runOrchestra(
     ].includes(a)
   ) as AgentId[];
 
-  // ── Pre-flight: Okunabilir belge içeriği var mı? ─────────────
-  // Kullanıcı bilgi/belge sağlamadan orkestra boş analiz üretmesin.
-  // (Gerekliyse durup gerekçeyi yazar; "yine de devam et" seçilirse forceContinue ile ilerler.)
-  const isFullRun = (ctx.resumeFromRound ?? 1) <= 1;
-  const hasReadableContent = ctx.documents.some(
-    (d) =>
-      (d.extractedText?.trim().length ?? 0) > 50 ||
-      (d.summary?.trim().length ?? 0) > 0
-  );
-  if (
-    isFullRun &&
-    !ctx.forceContinue &&
-    ctx.preferences.checkpointMode !== "auto_continue" &&
-    ctx.documents.length > 0 &&
-    !hasReadableContent
-  ) {
-    const blockerId = uuid();
-    const blockerReason =
-      "Okunabilir belge içeriği bulunamadı. Belgeler yüklenmiş görünüyor ama içerikleri (OCR/metin/özet) çıkarılamamış — ajanlar bu hâliyle yalnızca dosya adlarıyla çalışır ve dilekçe sağlıklı üretilemez.";
-    emit({
-      type: "checkpoint",
-      checkpoint: {
-        id: blockerId,
-        triggeredAt: new Date().toISOString(),
-        reason: blockerReason,
-        timeoutMs: 0,
-        conflict: {
-          id: blockerId,
-          round: 1,
-          agents: analyzers.slice(0, 3),
-          description:
-            "Ne yapabilirsiniz?\n1) Vault'tan belgeyi silip yeniden yükleyin (OCR/farklı yöntem seçin) → sonra İşlemi Başlat'a basın.\n2) Veya 'Yine de devam et' diyerek içeriksiz ilerleyin (önerilmez; çıktı zayıf olur).",
-          options: [
-            {
-              id: "opt_override_unreadable",
-              label: "Yine de devam et (içerik okunamıyor)",
-              reasoning:
-                "Ajanlar dosya adı + özet olmadan çalışır; üretilen dilekçe zayıf ve eksik olabilir.",
-            },
-          ],
-        },
-      },
-    });
-    emit({
-      type: "orchestrator_message",
-      content:
-        "Duruyorum — okunabilir belge içeriği bulamadım. 📄 Bu davayı sağlıklı analiz edebilmem için belgelerin OCR/metin özetinin çıkarılmış olması gerekiyor. Lütfen Vault'tan belgeleri kontrol edip (durum 'ready' olmalı) yeniden başlatın veya 'Yine de devam et' deyin.",
-    });
-    return;
-  }
-
   // Orkestra Şefi karşılaması
   emit({
     type: "orchestrator_message",
@@ -208,22 +210,25 @@ export async function runOrchestra(
   });
 
   const documentContext = buildDocumentContext(ctx.documents);
-  const startRound = ctx.resumeFromRound ?? 1;
-  const round1Outputs: Record<AgentId, string> = {
-    ...(ctx.priorOutputs ?? {}),
-  } as Record<AgentId, string>;
 
-  if (startRound > 1) {
-    emit({
-      type: "orchestrator_message",
-      content: `Checkpoint kararı alındı. TUR ${startRound}'den devam ediyorum.`,
-    });
+  // ── Faz 16.6: checkpoint sonrası devam (resume route resumeFromRound gönderir)
+  const startRound = ctx.resumeFromRound ?? 1;
+  const skipRound1 = stage === "all" && startRound >= 2;
+  const skipRound2 = stage === "all" && startRound >= 3;
+  const priorFromResume = normalizePriorOutputs(ctx.priorOutputs);
+  if (ctx.forceContinue) {
+    console.log("[FAZ16.6] forceContinue=true → belge içeriği yetersiz olsa da devam edilecek");
   }
 
   // ─────────────────────────────────────────────────────
   // TUR 1 — Bağımsız paralel inceleme
   // ─────────────────────────────────────────────────────
-  if (startRound <= 1) {
+  if (skipRound1) {
+    emit({
+      type: "orchestrator_message",
+      content: `Kaldığı yerden devam ediliyor — TUR ${startRound}'den başlıyorum. Önceki turların çıktıları dava hafızasından yüklendi.`,
+    });
+  } else {
   emit({ type: "round_start", round: 1 });
 
   emit({
@@ -234,8 +239,26 @@ export async function runOrchestra(
     content: `TUR 1 başlıyor. Herkes bağımsız incelesin, dava şudur:\n\n${ctx.caseDescription || ctx.caseTitle}\n\n${documentContext.summary}`,
     messageType: "directive",
   });
+  } // Faz 16.6: skipRound1 dalı sonu
 
-  const round1Promises = analyzers.map(async (agentId) => {
+  const round1Outputs: Record<AgentId, string> = {} as Record<AgentId, string>;
+
+  if (skipRound1) {
+    // Önce resume route'un gönderdiği çıktılar, sonra DB'den tamamlama
+    for (const [k, v] of Object.entries(priorFromResume)) {
+      round1Outputs[k as AgentId] = v;
+    }
+    const reloaded = await reloadAgentOutputs(ctx.workspaceId);
+    for (const [k, v] of Object.entries(reloaded)) {
+      if (!round1Outputs[k as AgentId]) round1Outputs[k as AgentId] = v;
+    }
+    console.log(
+      `[FAZ16.6] resume: TUR 1 atlandı · ${Object.keys(priorFromResume).length} çıktı resume'dan, ` +
+        `toplam ${Object.keys(round1Outputs).length} ajan çıktısı hazır`
+    );
+  }
+
+  const round1Promises = (skipRound1 ? ([] as AgentId[]) : analyzers).map(async (agentId) => {
     emit({ type: "agent_start", agentId, round: 1 });
     try {
       // İçtihat Tarama Ajanı için ÖNCE Bedesten araması yap
@@ -312,75 +335,84 @@ export async function runOrchestra(
         type: "agent_error",
         agentId,
         round: 1,
-        message: String(e),
+        message: summarizeAgentError(e),
       });
     }
   });
   await Promise.all(round1Promises);
 
-  // ── TUR 1 bitti — özet ve durma politikası ───────────────────
-  emit({
-    type: "orchestrator_message",
-    content: summarizeRound1(analyzers, round1Outputs),
-  });
-
-  // "always_ask": Kullanıcı her TUR sonunda onay isteyeceğini seçti → dur, açıkla, bekle.
-  if (ctx.preferences.checkpointMode === "always_ask") {
-    const approvalId = uuid();
-    const karsiAgent: AgentId = "karsi_argüman";
+  // Çelişki tespit (basit heuristik: Karşı Argüman herkesi eleştiriyor)
+  if (
+    analyzers.includes("karsi_argüman") &&
+    ctx.preferences.checkpointMode !== "auto_continue"
+  ) {
+    const conflictId = uuid();
     emit({
       type: "checkpoint",
       checkpoint: {
-        id: approvalId,
+        id: conflictId,
         triggeredAt: new Date().toISOString(),
         reason:
-          "TUR 1 analizleri tamamlandı. Modunuz 'Her zaman sor' olduğu için TUR 2–3'e geçmeden önce devam onayınızı bekliyorum.",
-        timeoutMs: 0,
+          "TUR 1 tamamlandı. Karşı Argüman Ajanı diğer ajanlarda zayıflık tespit etti. Devam stratejisini seçin.",
+        timeoutMs:
+          ctx.preferences.checkpointMode === "always_ask" ? 0 : 10000,
         conflict: {
-          id: approvalId,
+          id: conflictId,
           round: 1,
           agents: analyzers.slice(0, 3),
           description:
-            "Onay verdiğinizde TUR 2 (çapraz inceleme) ve TUR 3 (dilekçe sentezi) çalışacak ve taslak Canvas'a düşecek. Bir strateji tercihi yapabilir veya 'Ben farklı bir şey diyeceğim' ile ek talimat verebilirsiniz.",
+            "Maddi Hukuk ve Karşı Argüman ajanları farklı hukukî dayanak öneriyor. Hangi yolla devam edelim?",
           options: [
             {
-              id: "opt_continue",
-              label: "TUR 2–3'e devam et, taslağı üret (önerilen)",
-              recommendedBy: karsiAgent,
+              id: "opt_maddi",
+              label: "Maddi Hukuk önerisini takip et",
+              recommendedBy: "maddi_hukuk",
               reasoning:
-                "Karşı Argüman çapraz eleştiri yapar, ardından sentezle taslak üretilir.",
+                "Klasik hukukî dayanak. Daha geniş içtihat birikimi var.",
             },
             {
-              id: "opt_priority_critique",
-              label: "Sentezde Karşı Argüman'ın tespitlerine öncelik ver",
+              id: "opt_karsi",
+              label: "Karşı Argüman uyarılarını dikkate al, alternatif strateji",
+              recommendedBy: "karsi_argüman",
               reasoning:
-                "Stres-test edilmiş, savunmacı ve sağlamlaştırılmış bir taslak istiyorum.",
+                "Riskleri minimize eder, daha savunmacı bir yaklaşım.",
             },
             {
-              id: "opt_comprehensive",
-              label: "Kapsamlı hukukî dayanakları öne çıkar",
-              reasoning:
-                "Geniş içtihat ve kanun maddesi kullanımı, detaylı gerekçe istiyorum.",
+              id: "opt_both",
+              label: "İkisini de dene, iki versiyon üret",
+              reasoning: "Daha fazla token harcar ama maksimum esneklik sağlar.",
             },
           ],
         },
       },
     });
-    emit({
-      type: "orchestrator_message",
-      content:
-        "TUR 1 bitti, onayınızı bekliyorum. Seçiminizi yaptığınız anda TUR 2–3 çalışır ve dilekçe taslağı Canvas'a düşer. Not: 'Her zaman sor' modunda olduğunuz için TUR 2 sonunda bir kez daha onay isteyeceğim.",
-    });
+    // NOT: Gerçek pause için resume endpoint'i kullanılacak;
+    // şu an mock akış (resume sonrası TUR 2 devam).
+    // Sprint 11.5'te LangGraph interrupt() ile gerçek pause.
+  }
+
+  // FAZ 15: round1 aşaması tek başına çalışıyorsa burada dur.
+  // (Vercel 300sn limiti TUR 2/3'ü yutamasın diye)
+  if (stage === "round1") {
+    emit({ type: "stage_complete", stage: "round1" });
     return;
   }
-  // ask_on_conflict / auto_continue: gerekmedikçe durmayız — TUR 2–3 aynı akışta devam eder.
-  } // startRound <= 1
 
   // ─────────────────────────────────────────────────────
   // TUR 2 — Çapraz inceleme
   // ─────────────────────────────────────────────────────
-  if (startRound <= 2) {
-  emit({ type: "round_start", round: 2 });
+  if (stage === "round2" || skipRound2) {
+    for (const [k, v] of Object.entries(priorFromResume)) {
+      round1Outputs[k as AgentId] = v;
+    }
+    const reloaded = await reloadAgentOutputs(ctx.workspaceId);
+    for (const [k, v] of Object.entries(reloaded)) {
+      if (!round1Outputs[k as AgentId]) round1Outputs[k as AgentId] = v;
+    }
+    console.log(`[FAZ15] round2: DB'den ${Object.keys(reloaded).length} ajan çıktısı yüklendi`);
+  }
+
+  if (!skipRound2) emit({ type: "round_start", round: 2 });
   emit({
     type: "agent_message",
     from: "orchestrator",
@@ -393,8 +425,7 @@ export async function runOrchestra(
 
   // Sadece Karşı Argüman çalışsın TUR 2'de (red-team yorumu)
   const crossReviewer: AgentId = "karsi_argüman";
-  let crossCritique: string | undefined;
-  if (analyzers.includes(crossReviewer)) {
+  if (analyzers.includes(crossReviewer) && !skipRound2) {
     emit({ type: "agent_start", agentId: crossReviewer, round: 2 });
     try {
       // Memory'yi tekrar çek (TUR 1 sonuçları eklendi)
@@ -417,7 +448,6 @@ export async function runOrchestra(
       });
       round1Outputs[crossReviewer] =
         (round1Outputs[crossReviewer] ?? "") + "\n\n## TUR 2 Eleştirisi\n" + result.content;
-      crossCritique = result.content;
       emit({
         type: "agent_done",
         agentId: crossReviewer,
@@ -440,68 +470,39 @@ export async function runOrchestra(
         type: "agent_error",
         agentId: crossReviewer,
         round: 2,
-        message: String(e),
+        message: summarizeAgentError(e),
       });
     }
   }
 
-  // ── always_ask: TUR 2 (çapraz inceleme) sonunda da onay iste ──
-  if (
-    ctx.preferences.checkpointMode === "always_ask" &&
-    typeof crossCritique === "string" &&
-    crossCritique.trim().length > 0
-  ) {
-    const approvalId = uuid();
-    emit({
-      type: "checkpoint",
-      checkpoint: {
-        id: approvalId,
-        triggeredAt: new Date().toISOString(),
-        reason:
-          "TUR 2 (çapraz inceleme) tamamlandı. 'Her zaman sor' modunda olduğunuz için TUR 3'e (dilekçe sentezi) geçmeden onayınızı bekliyorum.",
-        timeoutMs: 0,
-        conflict: {
-          id: approvalId,
-          round: 2,
-          agents: [crossReviewer, ...analyzers.filter((a) => a !== crossReviewer).slice(0, 2)],
-          description:
-            "Karşı Argüman Ajanı diğer ajan çıktılarını eleştirdi; eleştiriler senteze işlenecek. Onay verdiğinizde TUR 3 çalışır ve dilekçe taslağı Canvas'a düşer.",
-          options: [
-            {
-              id: "opt_continue_draft",
-              label: "TUR 3'e geç, dilekçe taslağını üret (önerilen)",
-              recommendedBy: crossReviewer,
-              reasoning:
-                "Çapraz inceleme bitti; tüm çıktılar ve eleştiriler sentezlenerek taslak üretilir.",
-            },
-            {
-              id: "opt_harden",
-              label: "Taslakta Karşı Argüman'ın tespitlerini ayrıntılı ele al",
-              reasoning:
-                "Zayıflık tespitlerine güçlü cevaplar içeren sağlamlaştırılmış taslak istiyorum.",
-            },
-            {
-              id: "opt_concise",
-              label: "Taslağı kısa ve öz tut",
-              reasoning:
-                "Netice-i talep öncelikli, kısa bir dilekçe istiyorum.",
-            },
-          ],
-        },
-      },
-    });
-    emit({
-      type: "orchestrator_message",
-      content:
-        "TUR 2 bitti, onayınızı bekliyorum. Seçiminizi yaptığınızda TUR 3 sentezi çalışır ve dilekçe taslağı Canvas'ta belirir.",
-    });
+  if (stage === "round2") {
+    emit({ type: "stage_complete", stage: "round2" });
     return;
   }
-  } // startRound <= 2
 
   // ─────────────────────────────────────────────────────
   // TUR 3 — Sentez + Dilekçe taslağı + Kalite Gate
   // ─────────────────────────────────────────────────────
+  if (stage === "draft" || stage === "quality") {
+    const reloaded = await reloadAgentOutputs(ctx.workspaceId);
+    for (const [k, v] of Object.entries(reloaded)) round1Outputs[k as AgentId] = v;
+    console.log(`[FAZ15] ${stage}: DB'den ${Object.keys(reloaded).length} ajan çıktısı yüklendi`);
+
+    // Faz 16.5 koruma: önceki turlar hiç çalışmadıysa boş/hurafe dilekçe
+    // üretmek yerine kullanıcıya net mesaj ver.
+    if (stage === "draft" && Object.keys(reloaded).length === 0) {
+      emit({
+        type: "error",
+        message:
+          "Dilekçe aşamasına geçilemedi: önceki turlardan hiçbir ajan çıktısı bulunamadı.\n\n" +
+          "Muhtemel sebep: analiz aşamasında tüm ajanlar hata verdi (API kotası/anahtarı) " +
+          "veya süreç yarıda kesildi.\n\n" +
+          "Çözüm: /api/v2/debug/models?test=1 ile modelleri test et, sonra süreci baştan başlat.",
+      });
+      return;
+    }
+  }
+
   emit({ type: "round_start", round: 3 });
   emit({
     type: "agent_message",
@@ -514,9 +515,24 @@ export async function runOrchestra(
   });
 
   // Dilekçe Editörü
-  emit({ type: "agent_start", agentId: "dilekce_editoru", round: 3 });
   let petitionMarkdown = "";
   let petitionCost = 0;
+
+  if (stage === "quality") {
+    // FAZ 15: kalite ayrı çağrı → taslağı DB'den oku, editörü tekrar çalıştırma
+    const latest = await getLatestPetition(ctx.workspaceId);
+    petitionMarkdown = latest?.markdown ?? "";
+    if (!petitionMarkdown) {
+      emit({
+        type: "error",
+        message:
+          "Kalite kontrolü için dilekçe taslağı bulunamadı. Süreci baştan başlatın.",
+      });
+      return;
+    }
+    console.log(`[FAZ15] quality: taslak DB'den yüklendi (${petitionMarkdown.length} karakter)`);
+  } else {
+  emit({ type: "agent_start", agentId: "dilekce_editoru", round: 3 });
   try {
     // Final memory refresh — tüm TUR'ların bilgisi eklendi
     const memoryR3 = await getMatterMemory(ctx.workspaceId, ctx.userId);
@@ -548,16 +564,34 @@ export async function runOrchestra(
       version: 1,
       markdown: result.content,
     });
+    // FAZ 15: draft aşaması burada biter (kalite ayrı çağrıda)
+    if (stage === "draft") {
+      emit({ type: "stage_complete", stage: "draft" });
+      return;
+    }
   } catch (e) {
     emit({
       type: "agent_error",
       agentId: "dilekce_editoru",
       round: 3,
-      message: String(e),
+      message: summarizeAgentError(e),
     });
-    emit({ type: "error", message: `Dilekçe üretilemedi: ${e}` });
+    const draftErr = String(e);
+    const draftModel = await resolveRoleModel(
+      AGENTS["dilekce_editoru"].modelRole,
+      ctx.userId
+    );
+    emit({
+      type: "error",
+      message: `Dilekçe üretilemedi.\n\n${friendlyProviderError(
+        draftErr,
+        draftModel.provider,
+        draftModel.modelId
+      )}`,
+    });
     return;
   }
+  } // FAZ 15: stage !== "quality" dalı kapanışı
 
   // Kalite Kontrol Ajanı — paragraf paragraf puanlama
   emit({ type: "agent_start", agentId: "kalite_kontrol", round: 3 });
@@ -629,7 +663,12 @@ function buildDocumentContext(docs: VaultDocument[]): {
     .join("\n");
 
   // Dinamik bütçe: toplam 100K karakter, belge başı dağıt
-  const TOTAL_CHAR_BUDGET = 100_000;
+  // FAZ 15: HARIS_DOC_CHAR_BUDGET ile küçültülebilir (Vercel 300sn limitine
+  // takılıyorsan 50000 yap → ajanlar daha hızlı döner, maliyet de düşer)
+  const TOTAL_CHAR_BUDGET = Math.max(
+    10_000,
+    parseInt(process.env.HARIS_DOC_CHAR_BUDGET ?? "100000", 10) || 100_000
+  );
   const readyDocs = docs.filter((d) => d.extractedText && d.extractedText.length > 50);
   const perDocBudget = readyDocs.length > 0
     ? Math.floor(TOTAL_CHAR_BUDGET / readyDocs.length)
@@ -653,7 +692,12 @@ function buildRound1Prompt(
   ctx: OrchestraContext,
   docCtx: { summary: string; full: string }
 ): string {
-  return `# Dava: ${ctx.caseTitle}\n\n## Tür\n${ctx.caseType || "(belirtilmemiş)"}\n\n## Kullanıcının Açıklaması\n${ctx.caseDescription || "(yok)"}\n\n## Belge Özetleri\n${docCtx.summary}\n\n## Belge İçerikleri (extracted)\n${docCtx.full}\n\n---\n\n${AGENTS[agentId].displayName} olarak yukarıdaki davayı incele. Sistem promptundaki görev tanımına göre çıktı üret.`;
+  const courtLine = [
+    ctx.preferences.court ? `\n\n## Mahkeme\n${ctx.preferences.court}` : "",
+    ctx.preferences.esasNo ? `\n\n## Esas No\n${ctx.preferences.esasNo}` : "",
+  ].join("");
+
+  return `# Dava: ${ctx.caseTitle}${courtLine}\n\n## Tür\n${ctx.caseType || "(belirtilmemiş)"}\n\n## Kullanıcının Açıklaması\n${ctx.caseDescription || "(yok)"}\n\n## Belge Özetleri\n${docCtx.summary}\n\n## Belge İçerikleri (extracted)\n${docCtx.full}\n\n---\n\n${AGENTS[agentId].displayName} olarak yukarıdaki davayı incele. Sistem promptundaki görev tanımına göre çıktı üret.`;
 }
 
 function buildSynthesisPrompt(
@@ -675,13 +719,44 @@ function buildSynthesisPrompt(
     )
     .join("");
 
-  // Checkpoint'te kullanıcının verdiği karar/talimat — mutlaka uygula
-  const userGuidance = ctx.userGuidance?.trim();
-  const guidanceBlock = userGuidance
-    ? `\n\n## KULLANICI YÖNLENDİRMESİ (orkestra checkpoint'ine verdiği karar)\n${userGuidance}\nBu yönlendirme KESİN talimattır: dilekçe taslağını buna göre şekillendir.\n`
+  const guidanceText = normalizeGuidance(ctx.userGuidance);
+  const guidanceBlock = guidanceText
+    ? `\n\n## KULLANICININ CHECKPOINT KARARI / YÖNLENDİRMESİ (BUNA UY)\n${guidanceText}`
     : "";
 
-  return `# NİHAİ DİLEKÇE SENTEZİ\n\n## Dava\n${ctx.caseTitle}\n${ctx.caseDescription}\n\n## UZUNLUK\n${lengthInstr}\n\n## KALİTE\n${qualityInstr}${guidanceBlock}\n\n## Uzman Ajanların Çıktıları\n${analyzerOutputs}\n\n---\n\nYukarıdaki tüm ajan çıktılarını SENTEZ ederek profesyonel bir Türk hukuku dilekçesi yaz.\n\nKURALLAR:\n1. Format: Mahkeme adı → Esas No → Taraflar → KONU → AÇIKLAMALAR (numaralı paragraflar) → HUKUKÎ DAYANAK → NETİCE-İ TALEP → Tarih + İmza\n2. Her paragrafa <!-- src:AJAN_ID --> yorum ekle\n3. Atıfları tam formatta yaz: "Yargıtay X. HD, E.YYYY/XYZ, K.YYYY/ABC, T.GG.AA.YYYY"\n4. ASLA halüsinasyon — emin değilsen "İçtihat Tarama Ajanı'nın bulduğu kararlar" gibi belirt`;
+  const courtBlock = [
+    ctx.preferences.court
+      ? `\n\n## GÖREVLİ MAHKEME (dilekçe başlığında AYNEN kullan)\n${ctx.preferences.court}`
+      : "",
+    ctx.preferences.esasNo
+      ? `\n\n## ESAS NUMARASI (dilekçe başlığında AYNEN kullan)\n${ctx.preferences.esasNo}`
+      : "",
+  ].join("");
+
+  return `# NİHAİ DİLEKÇE SENTEZİ\n\n## Dava\n${ctx.caseTitle}\n${ctx.caseDescription}${courtBlock}${guidanceBlock}\n\n## UZUNLUK\n${lengthInstr}\n\n## KALİTE\n${qualityInstr}\n\n## Uzman Ajanların Çıktıları\n${analyzerOutputs}\n\n---\n\nYukarıdaki tüm ajan çıktılarını SENTEZ ederek profesyonel bir Türk hukuku dilekçesi yaz.\n\nKURALLAR:\n1. Format: Mahkeme adı → Esas No → Taraflar → KONU → AÇIKLAMALAR (numaralı paragraflar) → HUKUKÎ DAYANAK → NETİCE-İ TALEP → Tarih + İmza\n2. Her paragrafa <!-- src:AJAN_ID --> yorum ekle\n3. Atıfları tam formatta yaz: "Yargıtay X. HD, E.YYYY/XYZ, K.YYYY/ABC, T.GG.AA.YYYY"\n4. ASLA halüsinasyon — emin değilsen "İçtihat Tarama Ajanı'nın bulduğu kararlar" gibi belirt`;
+}
+
+/**
+ * FAZ 15 — Önceki aşamanın çıktılarını Supabase'den geri yükler.
+ * Aynı ajanın birden fazla turda çıktısı varsa (TUR1 + TUR2 eleştirisi) birleştirir.
+ */
+async function reloadAgentOutputs(
+  workspaceId: string
+): Promise<Record<AgentId, string>> {
+  const outputs = {} as Record<AgentId, string>;
+  try {
+    const rows = await listAgentOutputs(workspaceId);
+    for (const row of rows) {
+      if (row.status !== "done" || !row.content) continue;
+      const prev = outputs[row.agentId] ?? "";
+      outputs[row.agentId] = prev
+        ? `${prev}\n\n## TUR ${row.round} Katkısı\n${row.content}`
+        : row.content;
+    }
+  } catch (e) {
+    console.warn("[FAZ15] agent_runs geri yükleme hatası:", e);
+  }
+  return outputs;
 }
 
 interface CallAgentResult {
@@ -701,129 +776,145 @@ async function callAgent(
   }
 ): Promise<CallAgentResult> {
   const agent = AGENTS[agentId];
-  const modelInfo = MODEL_REGISTRY[agent.modelRole];
 
-  // Anthropic provider
-  if (modelInfo.provider === "anthropic") {
-    return callAnthropic(
-      modelInfo.modelId,
-      agent.systemPrompt,
-      opts.prompt,
-      opts.maxTokens ?? 4000,
-      modelInfo.costPer1MInput,
-      modelInfo.costPer1MOutput
+  // FAZ 16: rol → model çözümlemesi
+  // Öncelik: kullanıcının aktif Model Stratejisi > Vercel env > kod varsayılanı
+  const resolved = await resolveRoleModel(agent.modelRole, opts.ctx.userId);
+  const maxTokens = opts.maxTokens ?? resolved.maxTokens ?? 4000;
+
+  if (!resolved.hasKey) {
+    console.warn(
+      `[HARIS] ${agentId}: ${resolved.provider} için API anahtarı yok → demo yanıt`
     );
+    return mockAgentCall(opts.prompt);
   }
-  // OpenAI provider
-  return callOpenAI(
-    modelInfo.modelId,
-    agent.systemPrompt,
-    opts.prompt,
-    opts.maxTokens ?? 4000,
-    modelInfo.costPer1MInput,
-    modelInfo.costPer1MOutput,
-    opts.jsonMode
-  );
+
+  const attempt = async (
+    provider: ProviderId,
+    modelId: string,
+    costIn: number,
+    costOut: number,
+    effort = resolved.effort
+  ): Promise<CallAgentResult> => {
+    const r = await callProvider({
+      provider,
+      model: modelId,
+      system: withPlatformContext(agent.systemPrompt),
+      user: opts.prompt,
+      maxTokens,
+      effort,
+      jsonMode: opts.jsonMode,
+      costIn,
+      costOut,
+    });
+    return {
+      content: r.content,
+      tokensUsed: r.tokensUsed,
+      cost: r.cost,
+      rawResponse: r.rawResponse,
+    };
+  };
+
+  try {
+    return await attempt(
+      resolved.provider,
+      resolved.modelId,
+      resolved.costPer1MInput,
+      resolved.costPer1MOutput
+    );
+  } catch (e) {
+    const primaryErr = String(e);
+    if (!isQuotaError(primaryErr)) throw e;
+
+    // ── OTOMATİK SAĞLAYICI YEDEKLEMESİ (Faz 14.1 / 16) ──
+    const fb = getFallbackSpec(resolved.provider);
+    if (!fb) {
+      throw new Error(
+        friendlyProviderError(primaryErr, resolved.provider, resolved.modelId)
+      );
+    }
+
+    console.warn(
+      `[HARIS FALLBACK] ${agentId}: ${resolved.provider}:${resolved.modelId} kotası bitti → ${fb.provider}:${fb.modelId} deneniyor`
+    );
+
+    try {
+      const fbResult = await attempt(
+        fb.provider,
+        fb.modelId,
+        fb.costPer1MInput,
+        fb.costPer1MOutput,
+        undefined
+      );
+      console.warn(
+        `[HARIS FALLBACK] ${agentId}: yedek model başarılı (${fb.provider}:${fb.modelId})`
+      );
+      return fbResult;
+    } catch (e2) {
+      throw new Error(
+        [
+          friendlyProviderError(primaryErr, resolved.provider, resolved.modelId),
+          "",
+          `Yedek model (${fb.provider}:${fb.modelId}) da çalışmadı:`,
+          friendlyProviderError(String(e2), fb.provider, fb.modelId),
+        ].join("\n")
+      );
+    }
+  }
 }
 
-async function callOpenAI(
-  model: string,
-  system: string,
-  user: string,
-  maxTokens: number,
-  costIn: number,
-  costOut: number,
-  jsonMode = false
-): Promise<CallAgentResult> {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) return mockAgentCall(user);
-
-  const res = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model,
-      ...(model.startsWith("gpt-5") || model.startsWith("o1") || model.startsWith("o3") ? {} : { temperature: 0.3 }),
-      ...(model.startsWith("gpt-5") || model.startsWith("o1") || model.startsWith("o3")
-        ? { max_completion_tokens: maxTokens }
-        : { max_tokens: maxTokens }),
-      ...(jsonMode && { response_format: { type: "json_object" } }),
-      messages: [
-        { role: "system", content: system },
-        { role: "user", content: user },
-      ],
-    }),
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`OpenAI ${res.status}: ${text.slice(0, 200)}`);
+/**
+ * Faz 16.6 — kullanıcının checkpoint yönlendirmesini metne çevirir.
+ * String, dizi veya nesne gelmesi fark etmez; boş/anlamsızsa "" döner.
+ */
+function normalizeGuidance(input: unknown): string {
+  if (!input) return "";
+  if (typeof input === "string") return input.trim();
+  if (Array.isArray(input)) {
+    return input
+      .map((x) => (typeof x === "string" ? x : JSON.stringify(x)))
+      .filter(Boolean)
+      .join("\n")
+      .trim();
   }
-  const data = await res.json();
-  const content = data.choices?.[0]?.message?.content ?? "";
-  const inputTokens = data.usage?.prompt_tokens ?? 0;
-  const outputTokens = data.usage?.completion_tokens ?? 0;
-  const cost = (inputTokens * costIn + outputTokens * costOut) / 1_000_000;
-  return {
-    content,
-    tokensUsed: { input: inputTokens, output: outputTokens },
-    cost,
-    rawResponse: data,
-  };
+  if (typeof input === "object") {
+    const o = input as Record<string, unknown>;
+    const parts: string[] = [];
+    for (const [k, v] of Object.entries(o)) {
+      if (v === null || v === undefined || v === "") continue;
+      parts.push(`- ${k}: ${typeof v === "object" ? JSON.stringify(v) : String(v)}`);
+    }
+    return parts.join("\n").trim();
+  }
+  return String(input).trim();
 }
 
-async function callAnthropic(
-  model: string,
-  system: string,
-  user: string,
-  maxTokens: number,
-  costIn: number,
-  costOut: number
-): Promise<CallAgentResult> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) return mockAgentCall(user);
-
-  const baseURL =
-    process.env.ANTHROPIC_BASE_URL?.replace(/\/$/, "") ||
-    "https://api.anthropic.com";
-
-  const res = await fetch(`${baseURL}/v1/messages`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-      Authorization: `Bearer ${apiKey}`, // OneProvider proxy de bunu bekleyebilir
-    },
-    body: JSON.stringify({
-      model,
-      max_tokens: maxTokens,
-      system,
-      messages: [{ role: "user", content: user }],
-    }),
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Anthropic ${res.status}: ${text.slice(0, 200)}`);
+/**
+ * Faz 16.6 — resume route'un gönderdiği priorOutputs'u güvenli biçimde
+ * { ajanId: metin } haritasına çevirir. Beklenmedik bir yapı gelirse boş döner
+ * (engine o zaman DB'den yükler, yani hiçbir şey patlamaz).
+ */
+function normalizePriorOutputs(input: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!input || typeof input !== "object" || Array.isArray(input)) return out;
+  for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
+    if (typeof value === "string" && value.trim().length > 0) {
+      out[key] = value;
+    } else if (value && typeof value === "object") {
+      const maybe = (value as { content?: unknown; text?: unknown }).content;
+      const maybeText = (value as { content?: unknown; text?: unknown }).text;
+      if (typeof maybe === "string" && maybe.trim()) out[key] = maybe;
+      else if (typeof maybeText === "string" && maybeText.trim()) out[key] = maybeText;
+    }
   }
-  const data = await res.json();
-  const content = Array.isArray(data.content)
-    ? data.content
-        .filter((c: { type: string }) => c.type === "text")
-        .map((c: { text: string }) => c.text)
-        .join("\n")
-    : data.content?.[0]?.text ?? "";
-  const inputTokens = data.usage?.input_tokens ?? 0;
-  const outputTokens = data.usage?.output_tokens ?? 0;
-  const cost = (inputTokens * costIn + outputTokens * costOut) / 1_000_000;
-  return {
-    content,
-    tokensUsed: { input: inputTokens, output: outputTokens },
-    cost,
-    rawResponse: data,
-  };
+  return out;
+}
+
+/** Ajan hatasını tek satır okunur özete indirger (UI log akışı için). */
+function summarizeAgentError(e: unknown): string {
+  const text = String(e ?? "");
+  const firstLine = text.split("\n")[0]?.trim() ?? text;
+  return firstLine.length > 220 ? `${firstLine.slice(0, 220)}…` : firstLine;
 }
 
 function mockAgentCall(_userPrompt: string): CallAgentResult {
@@ -877,41 +968,6 @@ function mockQualityReport(markdown: string): {
   return { paragraphs, summary };
 }
 
-
-/**
- * TUR 1 sonunda chat'e düşen kısa özet mesajı.
- * Her ajanın çıktısının ilk satırını özet olarak gösterir.
- */
-function summarizeRound1(
-  analyzers: AgentId[],
-  outputs: Record<AgentId, string>
-): string {
-  const seen = new Set<string>();
-  const lines = analyzers
-    .filter((a) => {
-      const text = (outputs[a] ?? "").trim();
-      if (!text || seen.has(a)) return false;
-      seen.add(a);
-      return true;
-    })
-    .map((a) => {
-      const text = (outputs[a] ?? "").trim();
-      const firstLine =
-        text
-          .split("\n")
-          .map((s) => s.trim())
-          .find((s) => s.length > 0) ?? "";
-      const snippet =
-        firstLine.length > 170 ? firstLine.slice(0, 170) + "…" : firstLine;
-      return `• ${AGENTS[a].emoji} **${AGENTS[a].shortName}**: ${snippet}`;
-    });
-  return [
-    `**TUR 1 tamamlandı.** ${analyzers.length} uzman ajan dosyayı bağımsız inceledi:`,
-    ...lines,
-    "",
-    "Sıradaki adım: TUR 2 çapraz inceleme ve TUR 3 dilekçe sentezi. Taslak bittiğinde Canvas'ta görünecek.",
-  ].join("\n");
-}
 
 /**
  * Davanın anahtar terimlerinden Bedesten arama sorgusu üret.

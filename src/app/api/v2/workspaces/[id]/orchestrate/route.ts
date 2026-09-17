@@ -18,20 +18,34 @@ import {
 } from "@/lib/v2/workspace/db";
 import {
   runOrchestra,
+  type OrchestraStage,
   type StreamEvent,
 } from "@/lib/v2/orchestra/engine";
 import { AGENTS } from "@/lib/v2/orchestra/agents";
+import { checkAiGate, recordAiCall } from "@/lib/billing/quota-gate";
 import { MODEL_REGISTRY } from "@/lib/v2/providers";
-import { consumeAiCall, assertUserCanUseAi } from "@/lib/billing/gate";
 
 export const runtime = "nodejs";
-export const maxDuration = 300;
+export const maxDuration = 300; // 5 dakika
 
 export async function POST(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+
+  // FAZ 15: ?stage=round1|round2|draft|quality  (yoksa "all" = eski davranış)
+  const requested = req.nextUrl.searchParams.get("stage");
+  const stage: OrchestraStage =
+    requested === "round1" ||
+    requested === "round2" ||
+    requested === "draft" ||
+    requested === "quality" ||
+    requested === "all"
+      ? requested
+      : "all";
+  const isFinalStage = stage === "all" || stage === "quality";
+  console.log(`[ORKESTRA] stage=${stage} workspace=${id}`);
   const userId = await getCurrentUserId();
   const ws = await getWorkspace(id, userId);
   if (!ws) {
@@ -40,56 +54,67 @@ export async function POST(
       headers: { "Content-Type": "application/json" },
     });
   }
-  const quota = await assertUserCanUseAi(userId, 4);
-  if (!quota.allowed) {
-    return new Response(JSON.stringify({ error: quota.reason, quota }), {
-      status: 402,
-      headers: { "Content-Type": "application/json" },
-    });
-  }
-
   const documents = await listDocuments(id);
+
+  // Faz 16.5: kota kapısı + sahip muafiyeti
+  // Tam bir orkestra süreci 1 çağrı sayılır (round1/all aşamasında),
+  // böylece 4 aşamalı akış ücretsiz kotayı 4x hızlı tüketmez.
+  const gate = await checkAiGate(userId);
+  if (!gate.allowed) {
+    console.warn(`[KOTA] orkestra engellendi user=${userId} plan=${gate.planId} ${gate.used}/${gate.limit}`);
+    await updateWorkspace(id, userId, { orchestration_status: "error" });
+    return new Response(
+      JSON.stringify({ error: gate.reason, quota: {
+        plan: gate.planName, used: gate.used, limit: gate.limit, remaining: 0 } }),
+      { status: gate.status, headers: { "Content-Type": "application/json" } }
+    );
+  }
+  if (stage === "round1" || stage === "all") recordAiCall(userId);
 
   await updateWorkspace(id, userId, {
     orchestration_status: "running",
-    current_round: 1,
+    ...(stage === "round1" || stage === "all" ? { current_round: 1 as const } : {}),
   });
 
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
-      let closed = false;
-      const heartbeat = setInterval(() => {
-        if (closed) return;
-        try {
-          controller.enqueue(encoder.encode(`: keepalive ${Date.now()}\n\n`));
-        } catch {
-          /* stream kapandı */
-        }
-      }, 15_000);
-
-      let lastType = "";
-      let lastRound: 1 | 2 | 3 | undefined;
       const emit = (event: StreamEvent) => {
-        lastType = event.type;
-        if (event.type === "round_start") lastRound = event.round;
         try {
-          if (event.type === "petition_draft") {
-            console.log(
-              `[SSE→] petition_draft v${event.version} · ${event.markdown?.length ?? 0} chars`
-            );
-          } else {
-            console.log(`[SSE→] ${event.type}`);
-          }
           const line = `data: ${JSON.stringify(event)}\n\n`;
           controller.enqueue(encoder.encode(line));
-          void persistEvent(id, userId, event).catch((err) =>
-            console.error("[SSE persist]", err)
+          // Faz 13.8: server log — production'da hangi event ne zaman gitti gör
+          console.log(
+            `[SSE→] ${event.type}${
+              (event as { agentId?: string }).agentId
+                ? ` (${(event as { agentId: string }).agentId})`
+                : ""
+            }${
+              event.type === "petition_draft"
+                ? ` v${(event as { version: number }).version} · ${
+                    (event as { markdown: string }).markdown?.length ?? 0
+                  } chars`
+                : ""
+            }`
           );
+          // Side-effect: DB persist
+          void persistEvent(id, userId, event).catch((err) => {
+            console.warn("[SSE persist hatası]", event.type, err);
+          });
         } catch (e) {
-          console.error("[SSE emit hatası]", e);
+          console.error("[SSE emit hatası]", event.type, e);
         }
       };
+
+      // Faz 13.8: keep-alive heartbeat (Vercel 25sn timeout için)
+      // Her 15 sn'de bir comment event yolla ki bağlantı düşmesin
+      const heartbeat = setInterval(() => {
+        try {
+          controller.enqueue(encoder.encode(": heartbeat\n\n"));
+        } catch {
+          // controller kapalıysa ignore
+        }
+      }, 15000);
 
       try {
         await runOrchestra(
@@ -98,13 +123,7 @@ export async function POST(
             userId,
             caseTitle: ws.title,
             caseType: ws.case_type,
-            caseDescription: [
-              ws.case_description,
-              ws.preferences?.court ? `Mahkeme: ${ws.preferences.court}` : "",
-              ws.preferences?.esasNo ? `Esas: ${ws.preferences.esasNo}` : "",
-            ]
-              .filter(Boolean)
-              .join("\n"),
+            caseDescription: ws.case_description,
             documents,
             preferences: {
               petitionLength:
@@ -113,16 +132,18 @@ export async function POST(
               checkpointMode:
                 ws.preferences?.checkpointMode ?? "ask_on_conflict",
               enabledAgents: ws.preferences?.enabledAgents ?? [],
-              court: ws.preferences?.court,
-              esasNo: ws.preferences?.esasNo,
+              // Faz 14.0: mahkeme bilgisi (kullanicinin reposunda mevcut)
+              court: (ws.preferences as { court?: string } | undefined)?.court,
+              esasNo: (ws.preferences as { esasNo?: string } | undefined)?.esasNo,
             },
           },
-          emit
+          emit,
+          stage
         );
-        const finished = lastType === "completed";
         await updateWorkspace(id, userId, {
-          orchestration_status: finished ? "completed" : "paused_for_user",
-          current_round: finished ? 3 : (lastRound ?? 1),
+          // FAZ 15: sadece son aşamada "completed" işaretle
+          orchestration_status: isFinalStage ? "completed" : "running",
+          ...(isFinalStage ? { current_round: 3 as const } : {}),
         });
       } catch (e) {
         emit({ type: "error", message: String(e) });
@@ -130,9 +151,12 @@ export async function POST(
           orchestration_status: "error",
         });
       } finally {
-        closed = true;
         clearInterval(heartbeat);
-        controller.close();
+        try {
+          controller.close();
+        } catch {
+          // already closed
+        }
       }
     },
   });
@@ -176,17 +200,6 @@ async function persistEvent(
           systemPrompt: agent.systemPrompt,
         }
       );
-      await consumeAiCall(userId, 1);
-      const ws = await getWorkspace(workspaceId, userId);
-      if (ws) {
-        await updateWorkspace(workspaceId, userId, {
-          total_cost_usd: Number(ws.total_cost_usd ?? 0) + (event.cost ?? 0),
-          total_tokens_input:
-            Number(ws.total_tokens_input ?? 0) + (event.tokensUsed?.input ?? 0),
-          total_tokens_output:
-            Number(ws.total_tokens_output ?? 0) + (event.tokensUsed?.output ?? 0),
-        });
-      }
       break;
     }
     case "agent_message":

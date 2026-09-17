@@ -17,6 +17,7 @@
  */
 
 import { MODEL_REGISTRY, type ModelRole } from "./index";
+import { friendlyProviderError, isRetryableError, isQuotaError } from "./fallback";
 
 // ─────────────────────────────────────────────────────────
 // TYPES
@@ -152,13 +153,17 @@ export async function callAnthropicOptimized(
 
       if (!res.ok) {
         const errText = await res.text();
-        lastError = `HTTP ${res.status}: ${errText.slice(0, 200)}`;
+        lastError = `HTTP ${res.status}: ${errText.slice(0, 300)}`;
 
-        // Retry edilebilir mi?
-        if (
-          attempt < maxRetries &&
-          (res.status === 429 || res.status === 502 || res.status === 503)
-        ) {
+        // Kota/kredi bitti → retry ANLAMSIZ (para gerekir), hemen anlaşılır hata ver
+        if (isQuotaError(errText, res.status)) {
+          throw new Error(
+            friendlyProviderError(errText, "anthropic", model.modelId)
+          );
+        }
+
+        // Geçici hatalarda (429 hız limiti, 5xx, timeout) exponential backoff
+        if (attempt < maxRetries && isRetryableError(errText, res.status)) {
           await sleep(1000 * Math.pow(2, attempt));
           continue;
         }
@@ -220,7 +225,11 @@ export async function callAnthropicOptimized(
       };
     } catch (e) {
       clearTimeout(tid);
-      lastError = String(e).slice(0, 200);
+      lastError = String(e).slice(0, 300);
+      // Kota / kimlik hatasında tekrar deneme — aynı hatayı 3 kez üretmek zaman kaybı
+      if (isQuotaError(lastError) || !isRetryableError(lastError)) {
+        throw e instanceof Error ? e : new Error(lastError);
+      }
       if (attempt < maxRetries) {
         await sleep(1000 * Math.pow(2, attempt));
         continue;

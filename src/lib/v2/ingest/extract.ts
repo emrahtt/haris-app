@@ -14,6 +14,11 @@
  */
 
 import pdfParse from "pdf-parse";
+import {
+  resolveClaudeVisionModel,
+  resolveMetaVisionModel,
+  resolveOpenAIVisionModel,
+} from "../providers";
 import mammoth from "mammoth";
 import { pdfToPng } from "pdf-to-png-converter";
 import { readUdf, isUdfFile } from "../udf/reader";
@@ -24,6 +29,7 @@ export type ExtractionMethod =
   | "claude_vision"
   | "openai_vision"
   | "gemini_vision"
+  | "meta_vision"
   | "best_of_3";
 
 export interface ExtractResult {
@@ -157,7 +163,7 @@ async function extractPdfWithMethod(
       durationMs: Date.now() - startTime,
       error: "Hızlı modda metin boş",
       userMessage:
-        "📄 Hızlı modda metin çıkarılamadı (PDF taranmış görsel olabilir). 'Claude Vision', 'OpenAI Vision' veya 'Gemini Vision' deneyin.",
+        "📄 Hızlı modda metin çıkarılamadı (PDF taranmış görsel olabilir). 'Muse Spark Vision', 'Claude Vision', 'OpenAI Vision' veya 'Gemini Vision' deneyin.",
     };
   }
 
@@ -173,7 +179,7 @@ async function extractPdfWithMethod(
         durationMs: Date.now() - startTime,
       };
     }
-    method = "openai_vision"; // fallback
+    method = pickDefaultVisionMethod(); // Faz 16.6: varsayılan OCR = Muse Spark 1.3
   }
 
   // CLAUDE VISION — direct PDF
@@ -184,6 +190,11 @@ async function extractPdfWithMethod(
   // OPENAI VISION — PDF → PNG → GPT-4o
   if (method === "openai_vision") {
     return extractWithOpenAIVision(buffer, pageCount, startTime);
+  }
+
+  // META VISION — PDF → PNG → Muse Spark 1.3 (varsayılan OCR)
+  if (method === "meta_vision") {
+    return extractWithMetaVision(buffer, pageCount, startTime);
   }
 
   // GEMINI VISION — PDF → PNG → Gemini Pro
@@ -217,8 +228,8 @@ async function extractWithClaudeVision(
   const baseURL =
     process.env.ANTHROPIC_BASE_URL?.replace(/\/$/, "") ||
     "https://api.anthropic.com";
-  const model =
-    process.env.HARIS_ANALYZER_MODEL?.split(":")[1] ?? "claude-sonnet-4-6";
+  // Faz 14.2: env'de provider öneki yanlışsa OpenAI modelini Claude'a gönderme
+  const model = resolveClaudeVisionModel();
 
   const maxTokens = Math.min(Math.max((pageCount || 5) * 800, 4000), 16000);
 
@@ -316,6 +327,60 @@ async function extractWithClaudeVision(
 // OPENAI VISION — PDF → PNG → GPT-4o (kanıtlanmış pipeline)
 // ─────────────────────────────────────────────────────────
 
+interface VisionTarget {
+  apiKey: string;
+  keyName: string;
+  baseUrl: string;
+  model: string;
+  label: string;
+  method: string;
+}
+
+/**
+ * Faz 16.6 — OCR varsayılanı artık Meta Muse Spark 1.3.
+ * Anahtar yoksa veya Meta başarısız olursa sessizce OpenAI Vision'a düşer.
+ */
+function pickDefaultVisionMethod(): ExtractionMethod {
+  if (process.env.MODEL_API_KEY || process.env.META_API_KEY) return "meta_vision";
+  if (process.env.OPENAI_API_KEY) return "openai_vision";
+  if (process.env.ANTHROPIC_API_KEY) return "claude_vision";
+  if (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY) return "gemini_vision";
+  return "openai_vision";
+}
+
+async function extractWithMetaVision(
+  buffer: Buffer,
+  pageCount: number,
+  startTime: number
+): Promise<ExtractResult> {
+  const apiKey = process.env.MODEL_API_KEY || process.env.META_API_KEY;
+  if (!apiKey) {
+    console.warn("[OCR] MODEL_API_KEY yok → OpenAI Vision'a düşülüyor");
+    return extractWithOpenAIVision(buffer, pageCount, startTime);
+  }
+
+  const target: VisionTarget = {
+    apiKey,
+    keyName: "MODEL_API_KEY",
+    baseUrl:
+      process.env.META_BASE_URL?.replace(/\/$/, "") || "https://api.meta.ai/v1",
+    model: resolveMetaVisionModel(),
+    label: "Muse Spark",
+    method: "meta_vision",
+  };
+
+  const result = await extractWithCompatVision(buffer, pageCount, startTime, target);
+
+  // Meta okuyamazsa OpenAI Vision'a düş (belge kaybolmasın)
+  if (result.error || (result.text ?? "").trim().length < 30) {
+    console.warn(
+      `[OCR] Meta Vision başarısız (${result.error ?? "boş metin"}) → OpenAI Vision'a düşülüyor`
+    );
+    return extractWithOpenAIVision(buffer, pageCount, startTime);
+  }
+  return result;
+}
+
 async function extractWithOpenAIVision(
   buffer: Buffer,
   pageCount: number,
@@ -325,6 +390,23 @@ async function extractWithOpenAIVision(
   if (!apiKey) {
     return errorResult(startTime, "OPENAI_API_KEY eksik", "🔑 OpenAI API key eksik");
   }
+  return extractWithCompatVision(buffer, pageCount, startTime, {
+    apiKey,
+    keyName: "OPENAI_API_KEY",
+    baseUrl: "https://api.openai.com/v1",
+    model: resolveOpenAIVisionModel(),
+    label: "OpenAI Vision",
+    method: "openai_vision",
+  });
+}
+
+async function extractWithCompatVision(
+  buffer: Buffer,
+  pageCount: number,
+  startTime: number,
+  target: VisionTarget
+): Promise<ExtractResult> {
+  const apiKey = target.apiKey;
 
   try {
     // PDF → PNG sayfaları (Windows path fix — mutlak path olarak options ver)
@@ -348,15 +430,17 @@ async function extractWithOpenAIVision(
       return errorResult(startTime, "PDF→PNG dönüşüm 0 sayfa döndü", "📄 PDF işlenemedi");
     }
 
-    // Her sayfa için GPT-4o Vision (paralel, max 3)
-    const model = process.env.HARIS_VISION_MODEL?.split(":")[1] ?? "gpt-4o";
+    // Her sayfa için vizyon çağrısı (paralel, max 3)
+    const model = target.model;
     const tasks = pngPages.map((page, i) => async () => {
       return callOpenAIVisionPage(
         apiKey,
         model,
         page.content as Buffer,
         i + 1,
-        pngPages.length
+        pngPages.length,
+        target.baseUrl,
+        target.label
       );
     });
     const results = await runWithLimit(tasks, 3);
@@ -379,15 +463,15 @@ async function extractWithOpenAIVision(
       return errorResult(
         startTime,
         "Tüm sayfalar başarısız",
-        "❌ GPT-4o Vision hiçbir sayfayı okuyamadı"
+        `❌ ${target.label} hiçbir sayfayı okuyamadı`
       );
     }
 
     return {
       text: combinedText.trim(),
       pageCount: pngPages.length,
-      method: "openai_vision",
-      modelUsed: `GPT-4o Vision (${pngPages.length} sayfa)`,
+      method: target.method,
+      modelUsed: `${target.label} ${model} (${pngPages.length} sayfa)`,
       usedAI: true,
       estimatedCost: totalCost,
       durationMs: Date.now() - startTime,
@@ -406,7 +490,9 @@ async function callOpenAIVisionPage(
   model: string,
   pngBuffer: Buffer,
   pageNum: number,
-  totalPages: number
+  totalPages: number,
+  baseUrl = "https://api.openai.com/v1",
+  label = "OpenAI"
 ): Promise<{ success: boolean; text: string; cost?: number; error?: string }> {
   const base64 = pngBuffer.toString("base64");
 
@@ -414,7 +500,7 @@ async function callOpenAIVisionPage(
     const controller = new AbortController();
     const tid = setTimeout(() => controller.abort(), 90_000);
     try {
-      const res = await fetch("https://api.openai.com/v1/chat/completions", {
+      const res = await fetch(`${baseUrl}/chat/completions`, {
         method: "POST",
         signal: controller.signal,
         headers: {
@@ -423,9 +509,10 @@ async function callOpenAIVisionPage(
         },
         body: JSON.stringify({
           model,
-          ...(model.startsWith("gpt-5") || model.startsWith("o1") || model.startsWith("o3")
+          ...(model.startsWith("gpt-5") || model.startsWith("o1") || model.startsWith("o3") || model.startsWith("muse-")
             ? { max_completion_tokens: 4000 }
             : { max_tokens: 4000 }),
+          ...(model.startsWith("muse-") ? { reasoning_effort: "high" } : {}),
           messages: [
             { role: "system", content: TURKISH_OCR_SYSTEM_PROMPT },
             {
@@ -455,7 +542,7 @@ async function callOpenAIVisionPage(
         return {
           success: false,
           text: "",
-          error: `GPT-4o HTTP ${res.status}: ${errText.slice(0, 100)}`,
+          error: `${label} HTTP ${res.status}: ${errText.slice(0, 100)}`,
         };
       }
 
@@ -768,7 +855,7 @@ async function extractImageWithMethod(
   if (!apiKey) {
     return errorResult(startTime, "OPENAI_API_KEY eksik", "🔑 OpenAI key eksik");
   }
-  const model = process.env.HARIS_VISION_MODEL?.split(":")[1] ?? "gpt-4o";
+  const model = resolveOpenAIVisionModel();
   const r = await callOpenAIVisionPage(apiKey, model, buffer, 1, 1);
   return {
     text: r.text,

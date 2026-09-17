@@ -3,18 +3,38 @@
  *
  * /v2/* altındaki tüm sayfaların ortak çerçevesi.
  * Eski /(app), /(legal), /admin route'ları etkilenmez.
+ *
+ * Faz 16: üst bara hesap menüsü eklendi (çıkış / hesap değiştir / Model Stratejisi).
  */
 
 import type { Metadata } from "next";
 import Link from "next/link";
-import { UsageMeter } from "@/components/billing/usage-meter";
+import { createClient } from "@/lib/supabase/server";
+import { UserMenu } from "@/components/v2/layout/user-menu";
 
 export const metadata: Metadata = {
   title: "HARIS v2 · Matter Workspace",
   description: "Davanın Yorulmaz Bekçisi — 12 uzman AI ajan orkestrası",
 };
 
-export default function V2Layout({ children }: { children: React.ReactNode }) {
+export default async function V2Layout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
+  let email: string | null = null;
+  try {
+    const supabase = await createClient();
+    if (supabase) {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      email = user?.email ?? null;
+    }
+  } catch {
+    email = null;
+  }
+
   return (
     <div className="min-h-screen bg-[#0A1628] text-slate-100">
       {/* Top bar — workspace bilgisi + global aksiyonlar */}
@@ -37,25 +57,19 @@ export default function V2Layout({ children }: { children: React.ReactNode }) {
             </Link>
           </div>
           <div className="flex items-center gap-4 text-sm">
-            <UsageMeter />
             <Link
-              href="/pricing"
-              className="text-slate-400 hover:text-[#C9A961] transition"
+              href="/settings/model-strategy"
+              className="text-slate-400 hover:text-slate-200 transition"
             >
-              Plan
+              Model Stratejisi
             </Link>
             <Link
-              href="/v2/analytics"
-              className="text-slate-400 hover:text-[#C9A961] transition"
-            >
-              Analitik
-            </Link>
-            <a
               href="/dashboard"
               className="text-slate-400 hover:text-slate-200 transition"
             >
-              ← Eski Arayüz
-            </a>
+              Eski Arayüz
+            </Link>
+            <UserMenu email={email} />
           </div>
         </div>
       </header>

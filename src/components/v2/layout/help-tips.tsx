@@ -1,133 +1,192 @@
 "use client";
 
 /**
- * HARIS v2 — Yardım / 5 adım turu
+ * HARIS v2 — Help Tips (Faz 13.9 Konsolidasyon)
  *
- * Eski tasarımda ekranın sol altında sabit "büyük sarı Yardım butonu" vardı.
- * Kullanıcı isteğiyle kaldırıldı: artık tetikleyici, dikey işlem çubuğundaki
- * (OrchestraRail) diğer öğelerle aynı stilde KÜÇÜK DİKEY "❓ Yardım" butonu.
- *
- * Açılan panel, çubuğun soluna (Canvas tarafına) yapışık açılır.
+ * Matter sayfasında ilk açılışta kısa "Nasıl Çalışır?" tip'i.
+ * localStorage ile bir kere kapatınca tekrar gösterilmez.
+ * Sağ alttaki FAB'ın üzerinde küçük ipucu bulut'u.
  */
 
 import { useEffect, useState } from "react";
 
-const STEPS = [
-  {
-    n: "1",
-    title: "Belge yükle",
-    body: "Sol Vault’tan evrak ekleyin. Okuma yöntemini seçin (Akıllı çoğu dosyada yeter).",
-  },
-  {
-    n: "2",
-    title: "Tarafları yaz",
-    body: "Sağda Taraflar → müvekkil ve karşı taraf. Çıkar çatışması otomatik kontrol edilir.",
-  },
-  {
-    n: "3",
-    title: "İşlemi başlat",
-    body: "Matter’ın solundaki dikey çubuğun en altındaki «İşlemi Başlat»a basın. 3 tur sürer.",
-  },
-  {
-    n: "4",
-    title: "Dilekçeyi düzelt",
-    body: "Orta Canvas’ta taslak belirecek. Chat’ten «daha sert yaz» veya @ajan ile revize edin.",
-  },
-  {
-    n: "5",
-    title: "V1’e aktar (isteğe bağlı)",
-    body: "Mahkeme / takvim / klasik panel için dikey çubukta V1 Araçlar → V1'e Aktar.",
-  },
-];
+interface Props {
+  /**
+   * Faz 16.6: OPSIYONEL.
+   * workspace-client.tsx belge sayısını geçiyor; orchestra-rail.tsx ise
+   * <HelpTips /> şeklinde propsuz kullanıyor. İkisi de çalışsın diye opsiyonel.
+   */
+  documentsCount?: number;
+}
 
-export function HelpTips() {
-  const [open, setOpen] = useState(false);
+const STORAGE_KEY = "haris-help-tips-dismissed-v1";
+
+export function HelpTips({ documentsCount = 0 }: Props) {
+  const [dismissed, setDismissed] = useState(true); // başlangıçta gizli
+  const [step, setStep] = useState(0);
 
   useEffect(() => {
-    try {
-      if (!localStorage.getItem("haris_tour_seen")) setOpen(true);
-    } catch {
-      /* ignore */
-    }
+    if (typeof window === "undefined") return;
+    const val = localStorage.getItem(STORAGE_KEY);
+    setDismissed(val === "true");
   }, []);
 
-  const toggle = () => {
-    const next = !open;
-    setOpen(next);
-    if (next) {
-      try {
-        localStorage.setItem("haris_tour_seen", "1");
-      } catch {
-        /* ignore */
-      }
+  const handleDismiss = () => {
+    setDismissed(true);
+    if (typeof window !== "undefined") {
+      localStorage.setItem(STORAGE_KEY, "true");
     }
   };
 
-  return (
-    <div className="relative flex-none border-t border-white/10">
-      {/* Küçük dikey Yardım butonu — Ayarlar'ın yanında */}
+  const handleReset = () => {
+    if (typeof window !== "undefined") {
+      localStorage.removeItem(STORAGE_KEY);
+    }
+    setDismissed(false);
+    setStep(0);
+  };
+
+  if (dismissed) {
+    return (
       <button
         type="button"
-        onClick={toggle}
-        title={open ? "Yardımı kapat" : "Yardım"}
-        aria-label="Yardım"
-        className={`w-full flex items-center justify-center py-3 min-h-[5rem] transition ${
-          open
-            ? "bg-[#C9A961]/15 text-[#C9A961]"
-            : "text-slate-300 hover:bg-white/5"
-        }`}
+        onClick={handleReset}
+        className="fixed bottom-6 left-6 z-40 w-8 h-8 rounded-full bg-slate-800/80 border border-white/10 text-slate-400 hover:text-[#C9A961] hover:bg-slate-800 transition text-sm flex items-center justify-center shadow-lg"
+        title="Nasıl çalışır?"
       >
-        <span
-          className="text-[10px] font-semibold tracking-wide whitespace-nowrap"
-          style={{
-            writingMode: "vertical-rl",
-            transform: "rotate(180deg)",
-          }}
-        >
-          ❓ Yardım
-        </span>
+        ?
       </button>
+    );
+  }
 
-      {open && (
-        <div className="absolute right-full top-0 mr-2 w-80 max-h-[26rem] overflow-y-auto rounded-xl border border-[#C9A961]/40 bg-[#0A1628] shadow-2xl p-4 z-50">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-sm font-semibold text-[#C9A961]">
-              5 adımda HARIS
-            </h3>
-            <button
-              type="button"
-              onClick={toggle}
-              className="text-slate-500 hover:text-slate-200 text-xs"
-            >
-              ✕
-            </button>
-          </div>
-          <ol className="space-y-2.5">
-            {STEPS.map((s) => (
-              <li key={s.n} className="flex gap-2">
-                <span className="shrink-0 w-5 h-5 rounded-full bg-[#C9A961] text-[#0A1628] text-[10px] font-bold flex items-center justify-center">
-                  {s.n}
-                </span>
-                <div>
-                  <div className="text-xs font-semibold text-slate-100">
-                    {s.title}
-                  </div>
-                  <div className="text-[11px] text-slate-400 leading-snug">
-                    {s.body}
-                  </div>
-                </div>
-              </li>
-            ))}
-          </ol>
+  const steps = [
+    {
+      title: "👋 Merhaba! HARIS'e Hoş Geldiniz",
+      body: (
+        <>
+          Bu 3 panel Türk hukukuna özel bir <strong>Matter Workspace</strong>.
+          <ul className="mt-2 space-y-1 text-slate-300 list-disc list-inside">
+            <li><strong>Sol:</strong> Belgeler + iş akışı</li>
+            <li><strong>Orta:</strong> Dilekçe Canvas</li>
+            <li><strong>Sağ:</strong> Chat + Hafıza + Taraflar</li>
+          </ul>
+        </>
+      ),
+    },
+    {
+      title: "📁 Adım 1: Belgeleri Yükleyin",
+      body: (
+        <>
+          Sol paneldeki <strong>+ Belge Ekle</strong>&apos;e basın. 6 farklı okuma
+          yöntemi arasından seçin:
+          <ul className="mt-2 space-y-1 text-slate-300 list-disc list-inside">
+            <li><strong>Akıllı (Otomatik)</strong>: Bilmiyorsanız bunu seçin</li>
+            <li><strong>Claude Opus 5</strong>: Hukuk metinlerinde en iyi</li>
+            <li><strong>Best of 3</strong>: Kritik belgeler için</li>
+          </ul>
+          {documentsCount === 0 && (
+            <div className="mt-2 text-amber-300 text-xs">
+              ⚠️ Henüz belge yok — önce 1-2 anahtar belge yükleyin
+            </div>
+          )}
+        </>
+      ),
+    },
+    {
+      title: "🎼 Adım 2: Orkestrayı Başlatın",
+      body: (
+        <>
+          Belgeler <strong>hazır</strong> olduğunda:
+          <ul className="mt-2 space-y-1 text-slate-300 list-disc list-inside">
+            <li>Sağ altta <strong>altın FAB</strong> butonuna basın</li>
+            <li>Ya da chat&apos;e <code className="text-[#C9A961]">başla</code> yazın</li>
+          </ul>
+          12 uzman ajan 3 turda çalışır (~2-5 dakika).
+        </>
+      ),
+    },
+    {
+      title: "💬 Adım 3: Chat ile Yönetin",
+      body: (
+        <>
+          Sağ chat panelinde:
+          <ul className="mt-2 space-y-1 text-slate-300 list-disc list-inside">
+            <li><code className="text-[#C9A961]">@drafter</code> gibi ajan mention</li>
+            <li>&quot;Karşı taraf ne diyor?&quot; gibi doğal soru</li>
+            <li>Yanıtın altında <strong>📎 Kaynaklar</strong> chip&apos;leri</li>
+          </ul>
+        </>
+      ),
+    },
+    {
+      title: "⚖️ Bonus: Çıkar Çatışması",
+      body: (
+        <>
+          Sağ panelde <strong>Taraflar</strong> kutusuna müvekkil / karşı taraf
+          eklerseniz, aynı kişi başka davanızda karşı taraf ise sistem{" "}
+          <strong className="text-red-300">otomatik uyarır</strong> (baro etik gereği).
+        </>
+      ),
+    },
+  ];
+
+  const current = steps[step];
+  const isLast = step === steps.length - 1;
+
+  return (
+    <div className="fixed bottom-24 left-6 z-40 w-80 rounded-lg border border-[#C9A961]/40 bg-slate-950/95 backdrop-blur-md shadow-2xl p-4 animate-in slide-in-from-left-4">
+      <div className="flex items-start justify-between mb-2">
+        <h4 className="text-sm font-semibold text-[#C9A961]">{current.title}</h4>
+        <button
+          type="button"
+          onClick={handleDismiss}
+          className="text-slate-500 hover:text-slate-300 text-lg leading-none"
+          aria-label="Kapat"
+        >
+          ×
+        </button>
+      </div>
+      <div className="text-xs text-slate-200 leading-relaxed">{current.body}</div>
+
+      {/* Step indicator */}
+      <div className="flex gap-1 mt-3">
+        {steps.map((_, i) => (
+          <span
+            key={i}
+            className={`h-1 flex-1 rounded ${
+              i === step ? "bg-[#C9A961]" : i < step ? "bg-[#C9A961]/40" : "bg-slate-700"
+            }`}
+          />
+        ))}
+      </div>
+
+      <div className="flex justify-between mt-3">
+        <button
+          type="button"
+          onClick={() => setStep(Math.max(0, step - 1))}
+          disabled={step === 0}
+          className="text-xs text-slate-400 hover:text-slate-200 disabled:opacity-30"
+        >
+          ← Geri
+        </button>
+        {isLast ? (
           <button
             type="button"
-            onClick={toggle}
-            className="mt-4 w-full px-3 py-2 rounded text-xs font-semibold bg-[#C9A961] text-[#0A1628] hover:bg-[#e6c479]"
+            onClick={handleDismiss}
+            className="text-xs px-3 py-1 rounded bg-[#C9A961] text-[#0A1628] hover:bg-[#B89751] font-medium"
           >
-            Turu kapat
+            Anladım ✓
           </button>
-        </div>
-      )}
+        ) : (
+          <button
+            type="button"
+            onClick={() => setStep(step + 1)}
+            className="text-xs px-3 py-1 rounded bg-[#C9A961]/20 text-[#C9A961] border border-[#C9A961]/40 hover:bg-[#C9A961]/30"
+          >
+            İleri →
+          </button>
+        )}
+      </div>
     </div>
   );
 }

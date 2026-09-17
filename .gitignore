@@ -11,3 +11,7 @@ next-env.d.ts
 .vercel
 "supabase/.temp/" 
 "supabase/.temp/" 
+
+tamir-*.log
+plans-YEDEK.txt
+push-*.log

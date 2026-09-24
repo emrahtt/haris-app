@@ -21,7 +21,7 @@ import { searchYargitay } from "../tools/bedesten-search";
 import { MODEL_REGISTRY } from "../providers";
 import type { VaultDocument } from "../state/workspace-state";
 import { buildEnhancedDocumentContext } from "./document-context";
-import type { DeliveryGate } from "./evidence-model";
+import type { DeliveryGate, SourcePacket } from "./evidence-model";
 
 export interface OrchestraContext {
   workspaceId: string;
@@ -219,6 +219,20 @@ export async function runOrchestra(
     message: "Dosya alımı: tüm belgeler sayfa-bazlı ve bölüm-bazlı taranıyor.",
   });
   const enhancedContext = buildEnhancedDocumentContext(ctx.documents);
+  const sourcePacket: SourcePacket = {
+    caseTitle: ctx.caseTitle,
+    caseType: ctx.caseType,
+    requestedDocument: "Dilekçe taslağı",
+    userObjective: ctx.caseDescription,
+    documentVersion: ctx.documents.map((d) => `${d.id}:${d.uploadedAt}`).join("|") || "no-documents",
+    documentsReviewed: ctx.documents.length,
+    readableDocuments: enhancedContext.stats.totalDocuments,
+    coveragePercent: enhancedContext.stats.coverage,
+    unresolvedConflicts: enhancedContext.conflicts.length,
+    unreadableDocuments: ctx.documents.filter((d) => !d.extractedText?.trim()).map((d) => d.filename),
+    openQuestions: enhancedContext.conflicts.map((c) => `${c.type}: ${c.doc1.filename} / ${c.doc2.filename}`),
+  };
+  const sourcePacketPrompt = `## DEĞİŞMEZ KAYNAK PAKETİ\n${JSON.stringify(sourcePacket, null, 2)}\nBu paket dışındaki model çıktısı kanıt değildir. Sayfa bilgisi yoksa sayfa uydurma.`;
   const documentContext = {
     summary: enhancedContext.summary,
     full: enhancedContext.fullByDocument
@@ -265,7 +279,7 @@ export async function runOrchestra(
     from: "orchestrator",
     to: "broadcast",
     round: 1,
-    content: `TUR 1 başlıyor. Herkes bağımsız incelesin, dava şudur:\n\n${ctx.caseDescription || ctx.caseTitle}\n\n${documentContext.summary}`,
+    content: `TUR 1 başlıyor. Herkes bağımsız incelesin, dava şudur:\n\n${ctx.caseDescription || ctx.caseTitle}\n\n${documentContext.summary}\n\n${sourcePacketPrompt}`,
     messageType: "directive",
   });
 
@@ -273,7 +287,7 @@ export async function runOrchestra(
     emit({ type: "agent_start", agentId, round: 1 });
     try {
       // İçtihat Tarama Ajanı için ÖNCE Bedesten araması yap
-      let prePrompt = memoryPromptBlock + "\n\n" + buildRound1Prompt(agentId, ctx, documentContext);
+      let prePrompt = memoryPromptBlock + "\n\n" + sourcePacketPrompt + "\n\n" + buildRound1Prompt(agentId, ctx, documentContext);
       if (agentId === "ictihat_tarama") {
         const searchQuery = extractSearchQuery(ctx);
         emit({
@@ -411,7 +425,7 @@ export async function runOrchestra(
   } // startRound <= 1
 
   // ─────────────────────────────────────────────────────
-  // TUR 2 — Çapraz inceleme
+  // TUR 2 �� Çapraz inceleme
   // ─────────────────────────────────────────────────────
   if (startRound <= 2) {
   emit({ type: "round_start", round: 2 });
@@ -445,7 +459,14 @@ export async function runOrchestra(
       const memoryR2 = await getMatterMemory(ctx.workspaceId, ctx.userId);
       const scratchpadR2 = await readScratchpad(ctx.workspaceId, ctx.userId);
       const memoryBlockR2 = buildMemoryPromptBlock(memoryR2, scratchpadR2);
-      const r2Prompt = `${memoryBlockR2}\n\nTUR 2 — BAĞIMSIZ RED-TEAM İNCELEMESİ.\n\nDosya bağlamı:\n${documentContext.full}\n\nTUR 1 analizleri:\n${Object.entries(round1Outputs)
+      const roleDirective = reviewer === "karsi_argüman"
+        ? "Bağımsız karşı taraf avukatı gibi çalış. TUR 1'deki ilk görüşünü koru; yalnızca yeni stratejiye saldır. Gizli düşünce bildiğini iddia etme."
+        : reviewer === "usul_hukuku"
+          ? "Yalnız usul denetçisi olarak çalış: görev, yetki, süre, ispat yükü, delil sunumu ve talep edilebilirliği test et."
+          : reviewer === "delil_haritalama"
+            ? "Yalnız karşı görüş ve kanıt denetçisi olarak çalış: aynı kanıtın ters anlamını, çelişkileri ve model tekrarını bul."
+            : "Yalnız içtihat ve kaynak denetçisi olarak çalış: karar künyesi, metin desteği ve konu ilgisini kontrol et; doğrulanamayanı kesin kabul etme.";
+      const r2Prompt = `${memoryBlockR2}\n\nTUR 2 — AYRI GÖREVİN RED-TEAM İNCELEMESİ.\n${roleDirective}\n\nDosya bağlamı:\n${documentContext.full}\n${sourcePacketPrompt}\n\nTUR 1 analizleri:\n${Object.entries(round1Outputs)
         .map(([k, v]) => `### ${AGENTS[k as AgentId]?.displayName ?? k}\n${v.slice(0, 3500)}`)
         .join("\\n\\n")}\n\n${AGENTS[reviewer].displayName} olarak yalnızca kendi uzmanlık merceğinle incele. Her risk için: (1) iddia, (2) kaynak, (3) açık zayıflık, (4) düzeltme önerisi, (5) kritik/önem derecesi ver. Kaynaksız bir şeyi doğrulanmış kabul etme.`;
       const result = await callAgent(reviewer, { prompt: r2Prompt, ctx, jsonMode: reviewer === "delil_haritalama" });
@@ -541,6 +562,8 @@ export async function runOrchestra(
     const synthesisPrompt =
       memoryBlockR3 +
       "\n\n" +
+      sourcePacketPrompt +
+      "\n\n" +
       buildSynthesisPrompt(ctx, round1Outputs, analyzers);
     const result = await callAgent("dilekce_editoru", {
       prompt: synthesisPrompt,
@@ -598,7 +621,7 @@ export async function runOrchestra(
     emit({ type: "agent_start", agentId: "kalite_kontrol", round: 3 });
 
     try {
-      const qcPrompt = `Aşağıdaki dilekçeyi bir hukuk bürosunun son kalite kapısı gibi değerlendir.\n\n${petitionMarkdown}\n\nHer paragraf için JSON üret: index, category (gerekli|nüans|doldurma), score (0-100), reason, warnings. Ayrıca summary içinde kalite_skoru, factualAccuracy, legalCorrectness, evidenceCompleteness, persuasivenessScore, criticalIssues ve deliveryStatus alanlarını ver.\n\nZORUNLU: Belge/kanun/içtihat dayanağı olmayan maddi iddiaları kritik sorun olarak işaretle. Doğrulanmamış kararları doğrulanmış gösterme.`;
+      const qcPrompt = `Aşağıdaki dilekçeyi bir hukuk bürosunun son kalite kapısı gibi değerlendir.\n\n${sourcePacketPrompt}\n\n${petitionMarkdown}\n\nHer paragraf için JSON üret: index, category (gerekli|nüans|doldurma), score (0-100), reason, warnings. Ayrıca summary içinde kalite_skoru, factualAccuracy, legalCorrectness, evidenceCompleteness, persuasivenessScore, criticalIssues ve deliveryStatus alanlarını ver.\n\nZORUNLU: Belge/kanun/içtihat dayanağı olmayan maddi iddiaları kritik sorun olarak işaretle. Doğrulanmamış kararları doğrulanmış gösterme.`;
       const result = await callAgent("kalite_kontrol", { prompt: qcPrompt, ctx, jsonMode: true });
       try {
         qualityReport = JSON.parse(result.content);

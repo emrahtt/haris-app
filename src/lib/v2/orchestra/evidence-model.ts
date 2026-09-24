@@ -22,6 +22,23 @@ export const EvidenceRefSchema = z.object({
 
 export type EvidenceRef = z.infer<typeof EvidenceRefSchema>;
 
+/** Her aşamanın aynı dosya sürümüne bağlandığını gösteren kaynak paketi. */
+export const SourcePacketSchema = z.object({
+  caseTitle: z.string(),
+  caseType: z.string(),
+  requestedDocument: z.string().optional(),
+  userObjective: z.string(),
+  documentVersion: z.string(),
+  documentsReviewed: z.number().int().nonnegative(),
+  readableDocuments: z.number().int().nonnegative(),
+  coveragePercent: z.number().min(0).max(100),
+  unresolvedConflicts: z.number().int().nonnegative(),
+  unreadableDocuments: z.array(z.string()).default([]),
+  openQuestions: z.array(z.string()).default([]),
+});
+
+export type SourcePacket = z.infer<typeof SourcePacketSchema>;
+
 /** Hukuk madde referansı */
 export const LegalBasisSchema = z.object({
   code: z.string(), // "TBK", "HMK", "TTK" vb.

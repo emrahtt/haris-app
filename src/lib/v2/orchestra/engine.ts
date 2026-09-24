@@ -22,6 +22,15 @@ import { MODEL_REGISTRY } from "../providers";
 import type { VaultDocument } from "../state/workspace-state";
 import { buildEnhancedDocumentContext } from "./document-context";
 import type { DeliveryGate, SourcePacket } from "./evidence-model";
+import {
+  FINDING_TAG_INSTRUCTIONS,
+  compareDrafts,
+  describeDraftLoss,
+  parseFallbackModel,
+  summarizeFindings,
+} from "./draft-guard";
+
+const fallbackNotifiers = new WeakMap<OrchestraContext, (message: string) => void>();
 
 export interface OrchestraContext {
   workspaceId: string;
@@ -132,6 +141,7 @@ export async function runOrchestra(
   ctx: OrchestraContext,
   emit: EmitFn
 ): Promise<void> {
+  fallbackNotifiers.set(ctx, (content) => emit({ type: "orchestrator_message", content }));
   // 0) Matter memory + scratchpad'i çek (her tur boyunca güncellenir)
   const initialMemory = await getMatterMemory(ctx.workspaceId, ctx.userId);
   const initialScratchpad = await readScratchpad(ctx.workspaceId, ctx.userId);
@@ -481,7 +491,14 @@ export async function runOrchestra(
       emit({ type: "agent_error", agentId: reviewer, round: 2, message: String(e) });
     }
   }));
-  crossCritique = critiques.join("\\n\\n");
+  crossCritique = critiques.join("\n\n");
+
+  const findingSummary = summarizeFindings(Object.values(round1Outputs).join("\n"));
+  emit({
+    type: "analysis_stage",
+    stage: "evidence_model",
+    message: `Bulgu dağılımı — belgede yazan: ${findingSummary.counts["BELGE"]}, taraf iddiası: ${findingSummary.counts["TARAF İDDİASI"]}, çıkarım: ${findingSummary.counts["ÇIKARIM"]}, hukuki değerlendirme: ${findingSummary.counts["HUKUKİ DEĞERLENDİRME"]}, doğrulanmadı: ${findingSummary.counts["DOĞRULANMADI"]}.`,
+  });
 
   // ── always_ask: TUR 2 (çapraz inceleme) sonunda da onay iste ──
   if (
@@ -541,6 +558,21 @@ export async function runOrchestra(
   // TUR 3 — Sentez + Dilekçe taslağı + Kalite Gate
   // ─────────────────────────────────────────────────────
   emit({ type: "round_start", round: 3 });
+
+  let creativeStrategy = "";
+  emit({ type: "agent_start", agentId: "maddi_hukuk", round: 3 });
+  try {
+    const strategy = await callAgent("maddi_hukuk", {
+      prompt: `${sourcePacketPrompt}\n\n## TUR 1 GÖRÜŞLERİ\n${Object.values(round1Outputs).join("\n\n")}\n\n## RED-TEAM ELEŞTİRİLERİ\n${crossCritique || "(yok)"}\n\n## GÖREV: YARATICI LEHE STRATEJİ\nMüvekkil lehine, diğer uzmanların gözden kaçırmış olabileceği en fazla 5 alternatif argüman veya savunma hattı öner. Her biri için: dayanak (etiketli), risk, ve dilekçede nasıl kullanılacağı. Belgede dayanağı olmayan hiçbir olguyu kesinmiş gibi yazma; bunları [DOĞRULANMADI] ile işaretle.\n\n${FINDING_TAG_INSTRUCTIONS}`,
+      ctx,
+    });
+    creativeStrategy = strategy.content;
+    emit({ type: "agent_done", agentId: "maddi_hukuk", round: 3, content: strategy.content, tokensUsed: strategy.tokensUsed, cost: strategy.cost, rawResponse: strategy.rawResponse });
+    emit({ type: "agent_message", from: "maddi_hukuk", to: "dilekce_editoru", round: 3, content: `[yaratici_lehe_strateji]\n${strategy.content}`, messageType: "synthesis" });
+  } catch (e) {
+    emit({ type: "agent_error", agentId: "maddi_hukuk", round: 3, message: `Lehe strateji üretilemedi: ${String(e)}` });
+  }
+
   emit({
     type: "agent_message",
     from: "orchestrator",
@@ -566,7 +598,7 @@ export async function runOrchestra(
       "\n\n" +
       sourcePacketPrompt +
       "\n\n" +
-      buildSynthesisPrompt(ctx, round1Outputs, analyzers, round2Outputs);
+      buildSynthesisPrompt(ctx, round1Outputs, analyzers, round2Outputs, creativeStrategy);
     const result = await callAgent("dilekce_editoru", {
       prompt: synthesisPrompt,
       ctx,
@@ -617,6 +649,9 @@ export async function runOrchestra(
     timestamp: new Date().toISOString(),
   };
 
+  let draftLossIssues: string[] = [];
+  const findingSummaryForGate = summarizeFindings(Object.values(round1Outputs).join("\n"));
+
   for (let iteration = 1; iteration <= 3; iteration += 1) {
     emit({ type: "quality_iteration", iteration, score: 0, status: "needs_revision" });
     emit({ type: "analysis_stage", stage: "citation_check", message: `Kalite iterasyonu ${iteration}: iddia, delil ve atıflar denetleniyor.` });
@@ -631,16 +666,28 @@ export async function runOrchestra(
         qualityReport = mockQualityReport(petitionMarkdown);
       }
       const score = Number(qualityReport?.summary?.kalite_skoru ?? 0);
-      const criticalIssues = Array.isArray(qualityReport?.summary?.criticalIssues)
-        ? qualityReport.summary.criticalIssues.map((description: string) => ({ type: "unsupported_claim" as const, description }))
-        : [];
+      const criticalIssues: DeliveryGate["criticalIssues"] = [
+        ...(Array.isArray(qualityReport?.summary?.criticalIssues)
+          ? qualityReport.summary.criticalIssues.map((description: string) => ({ type: "unsupported_claim" as const, description }))
+          : []),
+        ...draftLossIssues.map((description) => ({ type: "legal_error" as const, description })),
+      ];
+      const draftFindings = summarizeFindings(petitionMarkdown);
+      const gateWarnings: DeliveryGate["warnings"] = [
+        ...(draftFindings.counts["DOĞRULANMADI"] > 0
+          ? [{ type: "weak_evidence" as const, description: `Taslakta ${draftFindings.counts["DOĞRULANMADI"]} doğrulanmamış bilgi var.` }]
+          : []),
+        ...(findingSummaryForGate.counts["TARAF İDDİASI"] > 0
+          ? [{ type: "ambiguous_fact" as const, description: `Analizde ${findingSummaryForGate.counts["TARAF İDDİASI"]} belgeyle kanıtlanmamış taraf iddiası var.` }]
+          : []),
+      ];
       const evidenceCompleteness = Number(qualityReport?.summary?.evidenceCompleteness ?? 0);
       const passed = score >= (ctx.preferences.qualityMode === "strict" ? 88 : 78) && criticalIssues.length === 0 && evidenceCompleteness >= 0.7;
       deliveryGate = {
         status: passed ? "approved" : criticalIssues.length > 0 ? "requires_review" : "rejected",
         reason: passed ? "Kalite eşiği, kanıt kapsamı ve kritik hata kapısı geçildi." : "Kalite eşiği veya kanıt kapsamı henüz yeterli değil; dilekçe yeniden gözden geçirilecek.",
         criticalIssues,
-        warnings: [],
+        warnings: gateWarnings,
         reviewedBy: "kalite_kontrol",
         timestamp: new Date().toISOString(),
       };
@@ -653,13 +700,37 @@ export async function runOrchestra(
       if (iteration === 3) break;
 
       emit({ type: "analysis_stage", stage: "revision", message: `İterasyon ${iteration} başarısız: editör taslağı kanıt ve red-team bulgularına göre yeniden yazıyor.` });
+      const revisionRules = "Sadece doğrulanabilir iddiaları koru. Her maddi iddiayı belge/sayfa, kanun veya doğrulanmış içtihatla bağla. Kritik sorunları gider. Belirsiz kalanları açıkça [AVUKAT İNCELEMESİ] işaretiyle belirt. ÖNCEKİ TASLAKTAKİ HİÇBİR TALEBİ, TUTARI, 'SAKLI KALMAK' ÇEKİNCESİNİ VEYA OLUMSUZ İFADEYİ ('değil', 'yoktur' vb.) SİLME VE ANLAMINI TERSİNE ÇEVİRME. Bir talebi kaldırman gerekiyorsa silme; yanına [AVUKAT İNCELEMESİ: kaldırılması önerilir — gerekçe] yaz.";
+      const previousDraft = petitionMarkdown;
       const revision = await callAgent("dilekce_editoru", {
-        prompt: `${buildSynthesisPrompt(ctx, round1Outputs, analyzers, round2Outputs)}\n\n## RED-TEAM ELEŞTİRİLERİ\n${crossCritique}\n\n## ÖNCEKİ TASLAK\n${petitionMarkdown}\n\n## KALİTE RAPORU\n${JSON.stringify(qualityReport)}\n\n## ZORUNLU REVİZYON\nSadece doğrulanabilir iddiaları koru. Her maddi iddiayı belge/sayfa, kanun veya doğrulanmış içtihatla bağla. Kritik sorunları gider. Belirsiz kalanları açıkça [AVUKAT İNCELEMESİ] işaretiyle belirt.`,
+        prompt: `${buildSynthesisPrompt(ctx, round1Outputs, analyzers, round2Outputs, creativeStrategy)}\n\n## RED-TEAM ELEŞTİRİLERİ\n${crossCritique}\n\n## ÖNCEKİ TASLAK\n${previousDraft}\n\n## KALİTE RAPORU\n${JSON.stringify(qualityReport)}\n\n## ZORUNLU REVİZYON\n${revisionRules}`,
         ctx,
         maxTokens: 16000,
       });
-      petitionMarkdown = revision.content;
+      let revisedDraft = revision.content;
       petitionCost += revision.cost;
+
+      let loss = compareDrafts(previousDraft, revisedDraft);
+      if (loss.hasLoss) {
+        emit({ type: "analysis_stage", stage: "revision", message: `Revizyonda kaybolan unsurlar bulundu, geri eklenmesi isteniyor: ${describeDraftLoss(loss).join(" | ")}` });
+        try {
+          const repair = await callAgent("dilekce_editoru", {
+            prompt: `## REVİZE TASLAK\n${revisedDraft}\n\n## KAYBOLAN UNSURLAR\n${describeDraftLoss(loss).join("\n")}\n\n## GÖREV\nRevize taslağı koru, yalnızca yukarıdaki kaybolan unsurları uygun bölümlere aynı anlamla geri ekle. Başka değişiklik yapma. Tüm dilekçeyi döndür.`,
+            ctx,
+            maxTokens: 16000,
+          });
+          petitionCost += repair.cost;
+          const repairedLoss = compareDrafts(previousDraft, repair.content);
+          if (describeDraftLoss(repairedLoss).length <= describeDraftLoss(loss).length) {
+            revisedDraft = repair.content;
+            loss = repairedLoss;
+          }
+        } catch (repairError) {
+          emit({ type: "agent_error", agentId: "dilekce_editoru", round: 3, message: `Kaybolan unsurlar geri eklenemedi: ${String(repairError)}` });
+        }
+      }
+      draftLossIssues = describeDraftLoss(loss);
+      petitionMarkdown = revisedDraft;
       emit({
         type: "agent_done",
         agentId: "dilekce_editoru",
@@ -679,6 +750,19 @@ export async function runOrchestra(
 
   emit({ type: "analysis_stage", stage: "delivery_gate", message: `Teslim kararı: ${deliveryGate.status}.` });
 
+  emit({ type: "agent_start", agentId: "muvekkil_iletisim", round: 3 });
+  try {
+    const hearing = await callAgent("muvekkil_iletisim", {
+      prompt: `${sourcePacketPrompt}\n\n## NİHAİ DİLEKÇE TASLAĞI\n${petitionMarkdown}\n\n## RED-TEAM ELEŞTİRİLERİ\n${crossCritique || "(yok)"}\n\n## TESLİM KARARI\n${JSON.stringify(deliveryGate)}\n\n## GÖREV: DURUŞMA HAZIRLIK ÖZETİ\nAvukatın duruşmaya girmeden önce okuyacağı, sade dilli ve en fazla 1 sayfalık bir özet hazırla. Başlıklar:\n1. Davanın 3 cümlelik özeti\n2. En güçlü 3 argümanımız (dayanağıyla)\n3. Karşı tarafın muhtemel 3 itirazı ve kısa cevaplarımız\n4. Hakimin sorabileceği sorular ve hazırlanacak cevaplar\n5. Duruşmaya götürülecek belgeler ve eksik belgeler\n6. Sorulması riskli / kaçınılması gereken konular\n7. Avukatın mutlaka kontrol etmesi gereken doğrulanmamış noktalar\nDilekçede olmayan yeni olgu uydurma.`,
+      ctx,
+    });
+    petitionCost += hearing.cost;
+    emit({ type: "agent_done", agentId: "muvekkil_iletisim", round: 3, content: hearing.content, tokensUsed: hearing.tokensUsed, cost: hearing.cost, rawResponse: hearing.rawResponse });
+    emit({ type: "agent_message", from: "muvekkil_iletisim", to: "broadcast", round: 3, content: `[durusma_hazirlik_ozeti]\n${hearing.content}`, messageType: "synthesis" });
+  } catch (e) {
+    emit({ type: "agent_error", agentId: "muvekkil_iletisim", round: 3, message: `Duruşma hazırlık özeti üretilemedi: ${String(e)}` });
+  }
+
   emit({
     type: "orchestrator_message",
     content: `Tamamlandı. Dilekçe taslağı hazır. Toplam maliyet: $${petitionCost.toFixed(
@@ -697,14 +781,15 @@ function buildRound1Prompt(
   ctx: OrchestraContext,
   docCtx: { summary: string; full: string }
 ): string {
-  return `# Dava: ${ctx.caseTitle}\n\n## Tür\n${ctx.caseType || "(belirtilmemiş)"}\n\n## Kullanıcının Açıklaması\n${ctx.caseDescription || "(yok)"}\n\n## Belge Özetleri\n${docCtx.summary}\n\n## Belge İçerikleri (extracted)\n${docCtx.full}\n\n---\n\n${AGENTS[agentId].displayName} olarak yukarıdaki davayı incele. Sistem promptundaki görev tanımına göre çıktı üret.`;
+  return `# Dava: ${ctx.caseTitle}\n\n## Tür\n${ctx.caseType || "(belirtilmemiş)"}\n\n## Kullanıcının Açıklaması\n${ctx.caseDescription || "(yok)"}\n\n## Belge Özetleri\n${docCtx.summary}\n\n## Belge İçerikleri (extracted)\n${docCtx.full}\n\n---\n\n${AGENTS[agentId].displayName} olarak yukarıdaki davayı incele. Sistem promptundaki görev tanımına göre çıktı üret.\n\n${FINDING_TAG_INSTRUCTIONS}`;
 }
 
 function buildSynthesisPrompt(
   ctx: OrchestraContext,
   outputs: Record<AgentId, string>,
   enabledAnalyzers: AgentId[],
-  round2Outputs: Partial<Record<AgentId, string>> = {}
+  round2Outputs: Partial<Record<AgentId, string>> = {},
+  creativeStrategy = ""
 ): string {
   const lengthInstr = PETITION_LENGTH_INSTRUCTIONS[ctx.preferences.petitionLength];
   const qualityInstr =
@@ -730,7 +815,7 @@ function buildSynthesisPrompt(
     ? `\n\n## KULLANICI YÖNLENDİRMESİ (orkestra checkpoint'ine verdiği karar)\n${userGuidance}\nBu yönlendirme KESİN talimattır: dilekçe taslağını buna göre şekillendir.\n`
     : "";
 
-  return `# NİHAİ DİLEKÇE SENTEZİ\n\n## Dava\n${ctx.caseTitle}\n${ctx.caseDescription}\n\n## UZUNLUK\n${lengthInstr}\n\n## KALİTE\n${qualityInstr}${guidanceBlock}\n\n## TUR 1 — BAĞIMSIZ İLK GÖRÜŞLER (DEĞİŞTİRİLEMEZ KAYIT)\n${analyzerOutputs}\n\n## TUR 2 — RED-TEAM ELEŞTİRİLERİ\n${critiqueOutputs || "(red-team çıktısı yok)"}\n\n---\n\nYukarıdaki tüm ajan çıktılarını SENTEZ ederek profesyonel bir Türk hukuku dilekçesi yaz.\n\nKURALLAR:\n1. Format: Mahkeme adı → Esas No → Taraflar → KONU → AÇIKLAMALAR (numaralı paragraflar) → HUKUKÎ DAYANAK → NETİCE-İ TALEP → Tarih + İmza\n2. Her paragrafa <!-- src:AJAN_ID --> yorum ekle\n3. Atıfları tam formatta yaz: "Yargıtay X. HD, E.YYYY/XYZ, K.YYYY/ABC, T.GG.AA.YYYY"\n4. ASLA halüsinasyon — emin değilsen "İçtihat Tarama Ajanı'nın bulduğu kararlar" gibi belirt`;
+  return `# NİHAİ DİLEKÇE SENTEZİ\n\n## Dava\n${ctx.caseTitle}\n${ctx.caseDescription}\n\n## UZUNLUK\n${lengthInstr}\n\n## KALİTE\n${qualityInstr}${guidanceBlock}\n\n## TUR 1 — BAĞIMSIZ İLK GÖRÜŞLER (DEĞİŞTİRİLEMEZ KAYIT)\n${analyzerOutputs}\n\n## TUR 2 — RED-TEAM ELEŞTİRİLERİ\n${critiqueOutputs || "(red-team çıktısı yok)"}\n\n## YARATICI LEHE STRATEJİ (değerlendir; yalnız dayanağı olanları kullan)\n${creativeStrategy || "(yok)"}\n\n---\n\nYukarıdaki tüm ajan çıktılarını SENTEZ ederek profesyonel bir Türk hukuku dilekçesi yaz.\n\nKURALLAR:\n1. Format: Mahkeme adı → Esas No → Taraflar → KONU → AÇIKLAMALAR (numaralı paragraflar) → HUKUKÎ DAYANAK → NETİCE-İ TALEP → Tarih + İmza\n2. Her paragrafa <!-- src:AJAN_ID --> yorum ekle\n3. Atıfları tam formatta yaz: "Yargıtay X. HD, E.YYYY/XYZ, K.YYYY/ABC, T.GG.AA.YYYY"\n4. ASLA halüsinasyon — emin değilsen "İçtihat Tarama Ajanı'nın bulduğu kararlar" gibi belirt`;
 }
 
 interface CallAgentResult {
@@ -751,28 +836,30 @@ async function callAgent(
 ): Promise<CallAgentResult> {
   const agent = AGENTS[agentId];
   const modelInfo = MODEL_REGISTRY[agent.modelRole];
+  const run = (provider: "anthropic" | "openai", modelId: string) =>
+    provider === "anthropic"
+      ? callAnthropic(modelId, agent.systemPrompt, opts.prompt, opts.maxTokens ?? 4000, modelInfo.costPer1MInput, modelInfo.costPer1MOutput)
+      : callOpenAI(modelId, agent.systemPrompt, opts.prompt, opts.maxTokens ?? 4000, modelInfo.costPer1MInput, modelInfo.costPer1MOutput, opts.jsonMode);
 
-  // Anthropic provider
-  if (modelInfo.provider === "anthropic") {
-    return callAnthropic(
-      modelInfo.modelId,
-      agent.systemPrompt,
-      opts.prompt,
-      opts.maxTokens ?? 4000,
-      modelInfo.costPer1MInput,
-      modelInfo.costPer1MOutput
+  try {
+    return await run(modelInfo.provider, modelInfo.modelId);
+  } catch (primaryError) {
+    const fallbackEnabled = process.env.HARIS_ENABLE_PROVIDER_FALLBACK !== "false";
+    const fallback = fallbackEnabled
+      ? parseFallbackModel(
+          modelInfo.provider === "anthropic"
+            ? process.env.HARIS_FALLBACK_ANTHROPIC_MODEL || process.env.HARIS_FALLBACK_MODEL
+            : process.env.HARIS_FALLBACK_MODEL
+        )
+      : null;
+    if (!fallback || fallback.modelId === modelInfo.modelId) throw primaryError;
+
+    fallbackNotifiers.get(opts.ctx)?.(
+      `Uyarı: ${agent.displayName} için ana model (${modelInfo.displayName}) yanıt vermedi; yedek model (${fallback.modelId}) kullanıldı. Hata: ${String(primaryError).slice(0, 160)}`
     );
+    const result = await run(fallback.provider, fallback.modelId);
+    return { ...result, rawResponse: { fallbackFrom: modelInfo.modelId, fallbackTo: fallback.modelId, response: result.rawResponse } };
   }
-  // OpenAI provider
-  return callOpenAI(
-    modelInfo.modelId,
-    agent.systemPrompt,
-    opts.prompt,
-    opts.maxTokens ?? 4000,
-    modelInfo.costPer1MInput,
-    modelInfo.costPer1MOutput,
-    opts.jsonMode
-  );
 }
 
 async function callOpenAI(
@@ -929,7 +1016,7 @@ function mockQualityReport(markdown: string): {
 
 /**
  * TUR 1 sonunda chat'e düşen kısa özet mesajı.
- * Her ajanın çıktısının ilk satırını özet olarak gösterir.
+ * Her ajanın çıktısının ilk satırını özet olarak g��sterir.
  */
 function summarizeRound1(
   analyzers: AgentId[],

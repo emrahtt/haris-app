@@ -4,6 +4,8 @@
   "private": true,
   "description": "HARIS — Davanın Yorulmaz Bekçisi | AI Destekli Türk Hukuku Platformu",
   "scripts": {
+    "test:acceptance": "node --test tests/acceptance.test.ts",
+    "check:models": "node --env-file-if-exists=.env.development.local scripts/check-models.mjs",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",

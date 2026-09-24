@@ -79,7 +79,9 @@ export function OrchestraRail({
   onSettings,
 }: Props) {
   const isRunning = isOrchestrating || orchestraStatus === "running";
-  const canStart = !isRunning && documentsCount > 0;
+  // FAZ 16.8: orchestraStatus "running"de takılı kalmış olsa bile
+  // isOrchestrating false ise başlatmaya izin ver (eskiden kilitleniyordu)
+  const canStart = !isOrchestrating && documentsCount > 0;
 
   const startLabel =
     orchestraStatus === "completed"
@@ -96,32 +98,35 @@ export function OrchestraRail({
 
   return (
     <div className="flex flex-col-reverse items-stretch w-11 shrink-0 border-l border-[#C9A961]/40 bg-[#07101c]">
-      {/* ── EN ALT: Başlat / Durdur ───────────────────────── */}
-      {isRunning ? (
-        <button
-          type="button"
-          onClick={onStop}
-          disabled={!onStop}
-          title="Süreci durdur"
-          className="flex-none flex items-center justify-center py-3 min-h-[7.5rem] transition bg-red-600/90 text-white hover:bg-red-500 disabled:opacity-50"
-        >
-          <VerticalLabel>⏹ Durdur</VerticalLabel>
-        </button>
-      ) : (
-        <button
-          type="button"
-          onClick={onStart}
-          disabled={!canStart}
-          title={startLabel}
-          className={`flex-none flex items-center justify-center py-3 min-h-[7.5rem] transition ${
-            canStart
-              ? "bg-[#C9A961] text-[#0A1628] hover:bg-[#e6c479]"
-              : "bg-white/5 text-slate-500 cursor-not-allowed"
-          }`}
-        >
-          <VerticalLabel>🎼 {startLabel}</VerticalLabel>
-        </button>
-      )}
+      {/* ── EN ALT: Başlat ─────────────────────────────────── */}
+      <button
+        type="button"
+        onClick={onStart}
+        disabled={!canStart}
+        title={canStart ? startLabel : "Belge yüklemeden süreç başlatılamaz"}
+        className={`flex-none flex items-center justify-center py-3 min-h-[7.5rem] transition ${
+          canStart
+            ? "bg-[#C9A961] text-[#0A1628] hover:bg-[#e6c479]"
+            : "bg-white/5 text-slate-500 cursor-not-allowed"
+        }`}
+      >
+        <VerticalLabel>🎼 {startLabel}</VerticalLabel>
+      </button>
+
+      {/* ── Durdur — FAZ 16.7: her zaman görünür, çalışmıyorsa pasif ── */}
+      <button
+        type="button"
+        onClick={onStop}
+        disabled={!isRunning || !onStop}
+        title={isRunning ? "Süreci durdur" : "Çalışan bir süreç yok"}
+        className={`flex-none flex items-center justify-center py-3 min-h-[6rem] border-t border-white/10 transition ${
+          isRunning
+            ? "bg-red-600 text-white hover:bg-red-500 animate-pulse"
+            : "bg-white/[0.03] text-slate-600 cursor-not-allowed"
+        }`}
+      >
+        <VerticalLabel>⏹ Durdur</VerticalLabel>
+      </button>
 
       {/* ── Çalışıyor göstergesi: dönen halka + aşama + süre ── */}
       {isRunning && (

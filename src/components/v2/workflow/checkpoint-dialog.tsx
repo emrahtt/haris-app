@@ -7,7 +7,7 @@
 
 import type { UserCheckpoint } from "@/lib/v2/state/workspace-state";
 import { AGENTS } from "@/lib/v2/orchestra/agents";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 interface Props {
   checkpoint: UserCheckpoint;
@@ -18,8 +18,6 @@ interface Props {
 export function CheckpointDialog({ checkpoint, onResolve, onClose }: Props) {
   const [customInput, setCustomInput] = useState("");
   const [selectedOption, setSelectedOption] = useState<string | null>(null);
-  const [remaining, setRemaining] = useState(checkpoint.timeoutMs / 1000);
-  const [autoApply, setAutoApply] = useState(false);
 
   // Seçenek id'si yerine ETİKETİNİ göndeririz; böylece engine kullanıcının
   // kararını "yönlendirme" olarak TUR 3 sentezine işleyebilir.
@@ -27,29 +25,10 @@ export function CheckpointDialog({ checkpoint, onResolve, onClose }: Props) {
     checkpoint.conflict?.options.find((o) => o.id === optionId)?.label ??
     optionId;
 
-  // Timeout countdown (Karar 4: hibrit mod default opsiyonel)
-  useEffect(() => {
-    if (checkpoint.timeoutMs <= 0) return;
-    const interval = setInterval(() => {
-      setRemaining((r) => {
-        if (r <= 1) {
-          clearInterval(interval);
-          setAutoApply(true);
-          // Önerilen seçeneği otomatik uygula
-          const recommended = checkpoint.conflict?.options.find((o) =>
-            o.recommendedBy
-          );
-          if (recommended) {
-            setTimeout(() => onResolve(optionLabel(recommended.id)), 800);
-          }
-          return 0;
-        }
-        return r - 1;
-      });
-    }, 1000);
-    return () => clearInterval(interval);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [checkpoint, onResolve]);
+  // FAZ 16.8: OTOMATİK KAPANMA KALDIRILDI.
+  // Eskiden 10 saniye sonra kendini kapatıp önerilen seçeneği kendisi
+  // uyguluyordu — kullanıcı ne seçtiğini bile göremiyordu.
+  // Artık dialog kullanıcı karar verene kadar AÇIK KALIR ve süreç DURAKLAR.
 
   const conflict = checkpoint.conflict;
 
@@ -83,6 +62,22 @@ export function CheckpointDialog({ checkpoint, onResolve, onClose }: Props) {
             {conflict.description}
           </div>
         )}
+
+        {/* FAZ 16.8: düz Türkçe açıklama — bu ekran ne, ne işe yarar */}
+        <div className="mb-4 p-3 rounded-lg border text-[12.5px] text-slate-300 leading-relaxed"
+             style={{ background: "rgba(201,169,97,0.06)", borderColor: "rgba(201,169,97,0.28)" }}>
+          <div className="font-semibold mb-1" style={{ color: "#e8d5a8" }}>
+            💡 Bu ekran ne işe yarıyor?
+          </div>
+          TUR 1 bitti: uzman ajanlar davayı bağımsız inceledi. <strong>Karşı Argüman
+          ajanı</strong> (şeytan avukatı) diğer ajanların önerilerinde zayıf nokta buldu ve
+          ortaya <strong>iki farklı hukukî strateji</strong> çıktı. Dilekçeyi hangisine göre
+          kuracağımızı sen seçiyorsun.
+          <div className="mt-1.5 text-slate-400">
+            Seçimin TUR 3&apos;te (dilekçe yazımı) omurga olarak kullanılır. Karar vermeden
+            süreç ilerlemez — zaman aşımı yok.
+          </div>
+        </div>
 
         {/* Options */}
         <div className="space-y-2 mb-4">
@@ -160,27 +155,37 @@ export function CheckpointDialog({ checkpoint, onResolve, onClose }: Props) {
           </label>
         </div>
 
-        {/* Timeout bar (Karar 4: hibrit) */}
-        {checkpoint.timeoutMs > 0 && !autoApply && (
-          <div className="mb-4 text-xs text-slate-400">
-            ⏱️ {remaining} saniye sonra önerilen seçenek otomatik uygulanacak
-            <div className="mt-1 h-1 bg-white/5 rounded overflow-hidden">
-              <div
-                className="h-full bg-[#C9A961] transition-all duration-1000"
-                style={{
-                  width: `${(remaining / (checkpoint.timeoutMs / 1000)) * 100}%`,
-                }}
-              />
-            </div>
-          </div>
-        )}
+        {/* FAZ 16.8: geri sayım yok — süreç duraklatıldı, karar bekleniyor */}
+        <div className="mb-4 p-3 rounded-lg border border-emerald-500/30 bg-emerald-500/5 text-xs text-emerald-100">
+          ⏸ <strong>Süreç duraklatıldı.</strong> Sen karar verene kadar hiçbir aşama
+          ilerlemez, zaman aşımı yok. Seçimin dilekçenin hukukî stratejisini belirler.
+        </div>
 
         <div className="flex justify-end gap-2">
           <button
-            onClick={onClose}
-            className="px-4 py-2 rounded text-sm text-slate-400 hover:text-slate-200"
+            onClick={() => {
+              // FAZ 16.8: "Kararı atla" → önerilen (veya ilk) seçenekle devam eder.
+              // Eski "Sonra" butonu dialogu kapatıyor ama süreci kilitli bırakıyordu.
+              const recommended =
+                checkpoint.conflict?.options.find((o) => o.recommendedBy) ??
+                checkpoint.conflict?.options[0];
+              onResolve(
+                recommended
+                  ? optionLabel(recommended.id)
+                  : "Varsayılan strateji ile devam et"
+              );
+            }}
+            className="px-4 py-2 rounded text-sm text-slate-400 hover:text-slate-200 border border-white/10"
+            title="Seçim yapmadan önerilen seçenekle devam et"
           >
-            Sonra
+            Kararı atla →
+          </button>
+          <button
+            onClick={onClose}
+            className="px-4 py-2 rounded text-sm text-slate-500 hover:text-slate-300"
+            title="Pencereyi kapat (süreç duraklatılmış kalır, raydan tekrar başlatabilirsin)"
+          >
+            Kapat
           </button>
           <button
             onClick={() =>

@@ -75,6 +75,13 @@ export function ModelStrategyPanel() {
   const [roles, setRoles] = useState<{ id: ModelRole; name: string; desc: string }[]>([]);
   const [strategies, setStrategies] = useState<Strategy[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
+  // FAZ 16.7: şu an GERÇEKTEN kullanılan modeller (strateji > env > varsayılan)
+  const [effective, setEffective] = useState<
+    { role: string; provider: ProviderId; modelId: string; effort?: Effort | null; source: string; hasKey: boolean }[]
+  >([]);
+  const [envWarnings, setEnvWarnings] = useState<
+    { envKey: string; rawValue: string; problem: string; resolvedTo: string }[]
+  >([]);
 
   const [config, setConfig] = useState<StrategyConfig>({});
   const [name, setName] = useState("");
@@ -95,13 +102,29 @@ export function ModelStrategyPanel() {
       setStrategies(data.strategies);
       setActiveId(data.activeId);
 
+      setEffective(data.effective ?? []);
+      setEnvWarnings(data.envWarnings ?? []);
+
       const active = data.strategies.find((s: Strategy) => s.id === data.activeId);
       if (active) {
         setConfig(active.config);
         setName(active.name);
         setDescription(active.description ?? "");
       } else {
-        setConfig(data.defaultStrategy);
+        // FAZ 16.7 DÜZELTME: eskiden kod içi DEFAULT_STRATEGY gösteriliyordu,
+        // bu yüzden panel "şu an kullanılan" modeli YANLIŞ gösteriyordu.
+        // Artık gerçekten devrede olan değerler (Vercel env dahil) ön-yükleniyor.
+        const fromEffective: StrategyConfig = {};
+        (data.effective ?? []).forEach(
+          (e: { role: ModelRole; provider: ProviderId; modelId: string; effort?: Effort | null }) => {
+            fromEffective[e.role] = {
+              provider: e.provider,
+              modelId: e.modelId,
+              ...(e.effort ? { effort: e.effort } : {}),
+            };
+          }
+        );
+        setConfig(Object.keys(fromEffective).length ? fromEffective : data.defaultStrategy);
         setName("");
         setDescription("");
       }
@@ -269,6 +292,78 @@ export function ModelStrategyPanel() {
             )}
           </div>
         ))}
+      </div>
+
+      {/* FAZ 16.7 — ŞU AN KULLANILANLAR */}
+      <div
+        style={{
+          border: "1px solid rgba(201,169,97,0.35)",
+          borderRadius: 10,
+          padding: 14,
+          marginBottom: 20,
+          background: "rgba(201,169,97,0.06)",
+        }}
+      >
+        <div style={{ fontWeight: 600, color: GOLD, marginBottom: 4, fontSize: 14 }}>
+          📌 Şu anda fiilen kullanılan modeller
+        </div>
+        <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 10 }}>
+          Kayıtlı strateji yoksa Vercel env değişkenleri geçerlidir. Aşağıdaki liste
+          her isteğin gerçekten hangi modele gittiğini gösterir.
+        </div>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+            <thead>
+              <tr style={{ color: "#94a3b8", textAlign: "left", borderBottom: "1px solid rgba(255,255,255,0.10)" }}>
+                <th style={th}>Rol</th>
+                <th style={th}>Model</th>
+                <th style={th}>Kaynak</th>
+                <th style={th}>Anahtar</th>
+              </tr>
+            </thead>
+            <tbody>
+              {effective.map((e) => {
+                const role = roles.find((r) => r.id === e.role);
+                const src =
+                  e.source === "strateji"
+                    ? { t: "🟢 Kayıtlı strateji", c: "#4ade80" }
+                    : e.source === "env"
+                      ? { t: "🔵 Vercel env", c: "#60a5fa" }
+                      : { t: "⚪ Kod varsayılanı", c: "#94a3b8" };
+                return (
+                  <tr key={e.role} style={{ borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+                    <td style={td}>
+                      <div style={{ fontWeight: 600 }}>{role?.name ?? e.role}</div>
+                    </td>
+                    <td style={td}>
+                      <code style={{ color: "#e2e8f0" }}>
+                        {e.provider}:{e.modelId}
+                      </code>
+                      {e.effort && <span style={{ color: "#94a3b8" }}> · çaba: {e.effort}</span>}
+                    </td>
+                    <td style={{ ...td, color: src.c, whiteSpace: "nowrap" }}>{src.t}</td>
+                    <td style={{ ...td, color: e.hasKey ? "#4ade80" : "#f87171", whiteSpace: "nowrap" }}>
+                      {e.hasKey ? "✓ var" : "✕ YOK"}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        {envWarnings.length > 0 && (
+          <div style={{ marginTop: 12, padding: 10, borderRadius: 8, background: "rgba(127,29,29,0.25)", border: "1px solid rgba(248,113,113,0.35)" }}>
+            <div style={{ fontWeight: 600, color: "#fca5a5", fontSize: 12.5, marginBottom: 6 }}>
+              ⚠️ Vercel env&apos;inde hatalı model tanımı var ({envWarnings.length})
+            </div>
+            {envWarnings.map((w, i) => (
+              <div key={i} style={{ fontSize: 12, color: "#fecaca", marginBottom: 3 }}>
+                <code>{w.envKey}=&quot;{w.rawValue}&quot;</code> → {w.problem} →{" "}
+                <strong>kullanılan: {w.resolvedTo}</strong>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Rol kartları */}
@@ -542,6 +637,9 @@ const btnGold: React.CSSProperties = {
   fontWeight: 600,
   cursor: "pointer",
 };
+
+const th: React.CSSProperties = { padding: "6px 10px", fontWeight: 500, fontSize: 11.5, textTransform: "uppercase", letterSpacing: "0.04em" };
+const td: React.CSSProperties = { padding: "7px 10px", verticalAlign: "top" };
 
 const btnGhost: React.CSSProperties = {
   background: "transparent",

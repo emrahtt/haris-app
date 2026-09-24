@@ -45,6 +45,8 @@ export async function POST(
       ? requested
       : "all";
   const isFinalStage = stage === "all" || stage === "quality";
+  // FAZ 16.8: checkpoint kararı → dilekçe sentezine yönlendirme olarak işlenir
+  const guidance = req.nextUrl.searchParams.get("guidance") ?? undefined;
   console.log(`[ORKESTRA] stage=${stage} workspace=${id}`);
   const userId = await getCurrentUserId();
   const ws = await getWorkspace(id, userId);
@@ -125,6 +127,8 @@ export async function POST(
             caseType: ws.case_type,
             caseDescription: ws.case_description,
             documents,
+            // FAZ 16.8: checkpoint karari (OrchestraContext'in ust seviyesinde)
+            userGuidance: guidance,
             preferences: {
               petitionLength:
                 ws.preferences?.petitionLength ?? "standard",

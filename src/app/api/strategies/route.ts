@@ -16,9 +16,11 @@ import {
   providerKeyName,
   type ProviderId,
 } from "@/lib/v2/providers/catalog";
+import { getModelEnvReport } from "@/lib/v2/providers";
 import {
   DEFAULT_STRATEGY,
   ROLE_LABELS,
+  resolveRoleModel,
   deactivateAllStrategies,
   deleteStrategy,
   invalidateStrategyCache,
@@ -52,7 +54,29 @@ export async function GET() {
     getActiveStrategy(userId),
   ]);
 
+  // FAZ 16.7 — ŞU AN GERÇEKTEN KULLANILAN modeller
+  // (öncelik: aktif strateji > Vercel env > kod varsayılanı)
+  const effective = await Promise.all(
+    ROLES.map(async (role) => {
+      const r = await resolveRoleModel(role, userId);
+      return {
+        role,
+        provider: r.provider,
+        modelId: r.modelId,
+        effort: r.effort ?? null,
+        maxTokens: r.maxTokens ?? null,
+        source: r.source,
+        hasKey: r.hasKey,
+      };
+    })
+  );
+
+  const envReport = getModelEnvReport();
+
   return NextResponse.json({
+    effective,
+    envWarnings: envReport.warnings,
+    envValues: envReport.effective,
     providers: (Object.keys(PROVIDER_LABELS) as ProviderId[]).map((p) => ({
       id: p,
       label: PROVIDER_LABELS[p],

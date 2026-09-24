@@ -207,8 +207,19 @@ export default async function DashboardPage() {
               </Button>
             </Link>
             <Link href="/library">
-              <Button variant="ghost" className="w-full justify-center">
+              <Button variant="ghost" className="w-full justify-center mb-2">
                 <Library size={14} /> Şablon Kütüphanesi
+              </Button>
+            </Link>
+            {/* FAZ 16.7: Model Stratejisi + Matter Workspace kısayolları */}
+            <Link href="/settings/model-strategy">
+              <Button variant="ghost" className="w-full justify-center mb-2">
+                <Sparkles size={14} /> Model Stratejisi (AI)
+              </Button>
+            </Link>
+            <Link href="/v2">
+              <Button variant="ghost" className="w-full justify-center">
+                <Sparkles size={14} /> Matter Workspace (v2)
               </Button>
             </Link>
           </Card>

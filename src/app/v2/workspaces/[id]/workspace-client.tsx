@@ -14,6 +14,7 @@ import { MethodPicker, type ExtractionMethod } from "@/components/v2/vault/metho
 import { TabularReviewView } from "@/components/v2/tabular/tabular-review-view";
 import { SharePanel } from "@/components/v2/sharing/share-panel";
 import { OrchestraRail } from "@/components/v2/layout/orchestra-rail";
+import { OrchestraStatusBar } from "@/components/v2/layout/orchestra-status-bar";
 import type {
   VaultDocument,
   AgentOutput,
@@ -272,6 +273,7 @@ export function WorkspaceClient({
   const stopOrchestration = () => {
     stopRef.current = true;
     abortRef.current?.abort();
+    sweepStuckAgents("error");
     setIsOrchestrating(false);
     setCurrentStage("");
     setElapsedSec(0);
@@ -282,12 +284,30 @@ export function WorkspaceClient({
     );
   };
 
-  const startOrchestration = async () => {
+  // FAZ 16.8: checkpoint geldiğinde süreç GERÇEKTEN durur ve kullanıcı
+  // seçimi yapılana kadar bekler. Seçim "guidance" olarak sonraki aşamalara taşınır.
+  const checkpointPendingRef = useRef(false);
+  const pendingResumeRef = useRef<number | null>(null);
+
+  /** FAZ 16.9: "çalışıyor" takılı kalmış kartları temizler/durumunu kapatır */
+  const sweepStuckAgents = (toStatus: "error" | "done") => {
+    setAgentOutputs((prev) =>
+      prev.map((o) =>
+        o.status === "running"
+          ? { ...o, status: toStatus, finishedAt: new Date().toISOString() }
+          : o
+      )
+    );
+  };
+
+  const runStagesFrom = async (startIndex = 0, guidance?: string) => {
     if (documents.length === 0) {
       pushSystemMessage("⚠️ Önce sol panelden en az bir belge yükleyin.");
       return;
     }
     stopRef.current = false;
+    // FAZ 16.9: önceki (yarıda kalmış) çalışmanın takılı kartlarını sil
+    setAgentOutputs((prev) => prev.filter((o) => o.status !== "running"));
     setIsOrchestrating(true);
     setOrchestraStatus("running");
 
@@ -298,7 +318,8 @@ export function WorkspaceClient({
     );
 
     try {
-      for (const stage of ORCHESTRA_STAGES) {
+      for (let si = startIndex; si < ORCHESTRA_STAGES.length; si++) {
+        const stage = ORCHESTRA_STAGES[si];
         if (stopRef.current) break;
         setCurrentStage(stage);
         const stageStart = Date.now();
@@ -306,8 +327,9 @@ export function WorkspaceClient({
         abortRef.current = controller;
         console.log(`%c[AŞAMA] ${stage} başlıyor`, "color:#C9A961;font-weight:bold");
 
+        const gParam = guidance ? `&guidance=${encodeURIComponent(guidance)}` : "";
         const res = await fetch(
-          `/api/v2/workspaces/${workspaceId}/orchestrate?stage=${stage}`,
+          `/api/v2/workspaces/${workspaceId}/orchestrate?stage=${stage}${gParam}`,
           { method: "POST", signal: controller.signal }
         );
 
@@ -321,6 +343,7 @@ export function WorkspaceClient({
             serverMsg = "";
           }
           setOrchestraStatus("error");
+          sweepStuckAgents("error");
           pushSystemMessage(
             serverMsg || `⚠️ Orkestra başlatılamadı (HTTP ${res.status}).`
           );
@@ -336,14 +359,32 @@ export function WorkspaceClient({
 
         if (stopRef.current) break;
 
+        // FAZ 16.8: checkpoint varsa DUR ve kullanıcıyı bekle (otomatik devam YOK)
+        if (checkpointPendingRef.current) {
+          checkpointPendingRef.current = false;
+          pendingResumeRef.current = si + 1;
+          clearInterval(ticker);
+          setElapsedSec(0);
+          setCurrentStage("");
+          setIsOrchestrating(false);
+          setOrchestraStatus("paused_for_user");
+          console.log(
+            `%c[AŞAMA] checkpoint — süreç DURAKLATILDI, karar bekleniyor (devam: ${si + 1}. aşama)`,
+            "color:#fbbf24;font-weight:bold"
+          );
+          return;
+        }
+
         if (outcome.error) {
           setOrchestraStatus("error");
+          sweepStuckAgents("error");
           return; // hata mesajı zaten SSE ile sohbet'e düştü
         }
 
         if (!outcome.finished) {
           // Sunucu aşamayı bitiremeden koptu → büyük olasılıkla Vercel süre limiti
           setOrchestraStatus("error");
+          sweepStuckAgents("error");
           pushSystemMessage(
             `⚠️ **Sunucu bağlantısı "${stage}" aşamasında kesildi** (${secs} sn sonra).\n\n` +
               `Büyük olasılıkla Vercel fonksiyon süre limiti (300 sn) doldu.\n\n` +
@@ -364,18 +405,28 @@ export function WorkspaceClient({
     } catch (err) {
       if (stopRef.current) {
         console.log("[AŞAMA] kullanıcı durdurdu");
+        sweepStuckAgents("error");
       } else {
         console.error(err);
         setOrchestraStatus("error");
+        sweepStuckAgents("error");
         pushSystemMessage(`⚠️ Orkestra hatası: ${String(err)}`);
       }
     } finally {
+      // FAZ 16.9: süreç bittiyse hiçbir kart "çalışıyor" kalmasın
+      sweepStuckAgents("done");
       clearInterval(ticker);
       setElapsedSec(0);
       setCurrentStage("");
       setIsOrchestrating(false);
       abortRef.current = null;
     }
+  };
+
+  const startOrchestration = async () => {
+    pendingResumeRef.current = null;
+    checkpointPendingRef.current = false;
+    await runStagesFrom(0);
   };
 
   const consumeSSE = async (
@@ -492,6 +543,23 @@ export function WorkspaceClient({
           )
         );
         break;
+      case "agent_error": {
+        // FAZ 16.9: ajan hata aldıysa kartını "error"a çek.
+        // Eskiden bu case yoktu → ajan sonsuza dek "çalışıyor…" görünüyordu.
+        setAgentOutputs((prev) =>
+          prev.map((o) =>
+            o.agentId === event.agentId && o.round === event.round
+              ? {
+                  ...o,
+                  status: "error",
+                  finishedAt: new Date().toISOString(),
+                  error: String(event.message ?? "bilinmeyen hata"),
+                }
+              : o
+          )
+        );
+        break;
+      }
       case "agent_message":
         setAgentMessages((prev) => [
           ...prev,
@@ -506,11 +574,17 @@ export function WorkspaceClient({
           },
         ]);
         break;
-      case "checkpoint":
-        setCheckpoints((prev) => [...prev, event.checkpoint as UserCheckpoint]);
-        setOpenCheckpointId((event.checkpoint as UserCheckpoint).id);
+      case "checkpoint": {
+        // FAZ 16.8: aynı checkpoint'i tekrar tekrar listeye ekleme
+        const cp = event.checkpoint as UserCheckpoint;
+        checkpointPendingRef.current = true;
+        setCheckpoints((prev) =>
+          prev.some((c) => c.id === cp.id) ? prev : [...prev, cp]
+        );
+        setOpenCheckpointId(cp.id);
         setOrchestraStatus("paused_for_user");
         break;
+      }
       case "petition_draft": {
         const md = event.markdown as string;
         console.log(
@@ -587,7 +661,16 @@ export function WorkspaceClient({
           body: JSON.stringify({ checkpointId, choice }),
         }
       );
-      if (res.body) await consumeSSE(res.body);
+      // FAZ 16.8: resume endpoint'i JSON döner (SSE değil), kararı kaydeder.
+      // Asıl devam işi burada: kaldığı aşamadan sürer ve kullanıcının seçimi
+      // "guidance" olarak dilekçe sentezine işlenir.
+      void res;
+      const nextIndex = pendingResumeRef.current ?? 1;
+      pendingResumeRef.current = null;
+      pushSystemMessage(
+        `✅ Kararın kaydedildi: **${choice}**\n\nSüreç kaldığı yerden devam ediyor.`
+      );
+      await runStagesFrom(nextIndex, choice);
       await refreshPetitionFromServer();
     } finally {
       setIsOrchestrating(false);
@@ -628,12 +711,8 @@ export function WorkspaceClient({
     const isStartCommand = startCommands.some((cmd) =>
       trimmedLower === cmd || trimmedLower.startsWith(cmd + " ") || trimmedLower.startsWith(cmd + "!")
     );
-    if (
-      isStartCommand &&
-      !isOrchestrating &&
-      orchestraStatus !== "running" &&
-      documents.length > 0
-    ) {
+    // FAZ 16.8: orchestraStatus "running"de takılı kalsa bile yeniden başlatılabilsin
+    if (isStartCommand && !isOrchestrating && documents.length > 0) {
       // Kullanıcı mesajı ekle
       const userMsgStart: ChatMessage = {
         id: uuid(),
@@ -857,7 +936,21 @@ export function WorkspaceClient({
           />
         }
         canvas={
-          qualityReport && qualityReport.paragraphs ? (
+          <>
+          <OrchestraStatusBar
+            isRunning={isOrchestrating || orchestraStatus === "running"}
+            stage={currentStage}
+            elapsedSec={elapsedSec}
+            status={orchestraStatus}
+            petitionVersion={petition?.version}
+            activeAgent={(() => {
+              const r = agentOutputs.find((o) => o.status === "running");
+              if (!r) return undefined;
+              const a = AGENTS[r.agentId];
+              return a ? `${a.emoji} ${a.displayName}` : String(r.agentId);
+            })()}
+          />
+          {qualityReport && qualityReport.paragraphs ? (
             <QualityGateView
               markdown={petition?.markdown ?? ""}
               report={qualityReport as { paragraphs: NonNullable<typeof qualityReport.paragraphs>; summary: NonNullable<typeof qualityReport.summary> }}
@@ -876,7 +969,8 @@ export function WorkspaceClient({
                   : "Orkestra Şefi süreç başlatıldığında dilekçe taslağı burada belirecek."
               }
             />
-          )
+          )}
+          </>
         }
         chat={<OrchestratorChat messages={messages} onSend={handleSend} onClearHistory={handleClearHistory} workspaceId={workspaceId} isSending={isSending} />}
         internalDialogs={internalDialogsContent}

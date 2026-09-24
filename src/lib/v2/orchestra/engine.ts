@@ -354,8 +354,9 @@ export async function runOrchestra(
         triggeredAt: new Date().toISOString(),
         reason:
           "TUR 1 tamamlandı. Karşı Argüman Ajanı diğer ajanlarda zayıflık tespit etti. Devam stratejisini seçin.",
-        timeoutMs:
-          ctx.preferences.checkpointMode === "always_ask" ? 0 : 10000,
+        // FAZ 16.8: 0 = otomatik kapanma YOK. Kullanıcı karar verene kadar
+        // süreç duraklatılır (eskiden 10 sn sonra kendini kapatıyordu).
+        timeoutMs: 0,
         conflict: {
           id: conflictId,
           round: 1,

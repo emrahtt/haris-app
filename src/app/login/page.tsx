@@ -6,13 +6,17 @@ import { isDemoMode } from "@/lib/supabase/config";
 import { ArrowRight, AlertCircle, CheckCircle2 } from "lucide-react";
 
 interface Props {
-  searchParams: Promise<{ error?: string; message?: string }>;
+  searchParams: Promise<{ error?: string; message?: string; next?: string }>;
 }
 
 export default async function LoginPage({ searchParams }: Props) {
   const sp = await searchParams;
   const errorMsg = sp.error;
   const successMsg = sp.message;
+  const next =
+    typeof sp.next === "string" && sp.next.startsWith("/") && !sp.next.startsWith("//")
+      ? sp.next
+      : "/dashboard";
 
   return (
     <div className="min-h-screen grid grid-cols-1 md:grid-cols-2">
@@ -47,6 +51,7 @@ export default async function LoginPage({ searchParams }: Props) {
       {/* Sağ — form */}
       <div className="flex items-center justify-center p-10">
         <form action={signIn} className="w-full max-w-md">
+          <input type="hidden" name="next" value={next} />
           <h2 className="text-[28px] mb-2">Tekrar hoş geldiniz</h2>
           <p className="text-[var(--color-text-2)] text-sm mb-8">Hesabınıza giriş yapın</p>
 

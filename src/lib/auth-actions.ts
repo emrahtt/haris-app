@@ -15,6 +15,13 @@ import { isDemoMode } from "@/lib/supabase/config";
 export async function signIn(formData: FormData): Promise<void> {
   const email = formData.get("email") as string;
   const password = formData.get("password") as string;
+  const requestedNext = formData.get("next");
+  const next =
+    typeof requestedNext === "string" &&
+    requestedNext.startsWith("/") &&
+    !requestedNext.startsWith("//")
+      ? requestedNext
+      : "/dashboard";
 
   if (isDemoMode) {
     const cookieStore = await cookies();
@@ -23,7 +30,7 @@ export async function signIn(formData: FormData): Promise<void> {
       maxAge: 60 * 60 * 24 * 7,
       path: "/",
     });
-    redirect("/dashboard");
+    redirect(next);
   }
 
   const supabase = await createClient();
@@ -32,10 +39,12 @@ export async function signIn(formData: FormData): Promise<void> {
   const { error } = await supabase.auth.signInWithPassword({ email, password });
 
   if (error) {
-    redirect(`/login?error=${encodeURIComponent(error.message)}`);
+    redirect(
+      `/login?error=${encodeURIComponent(error.message)}&next=${encodeURIComponent(next)}`
+    );
   }
 
-  redirect("/dashboard");
+  redirect(next);
 }
 
 export async function signUp(formData: FormData): Promise<void> {

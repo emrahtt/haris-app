@@ -652,7 +652,7 @@ export function WorkspaceClient({
         ref={fileInputRef}
         type="file"
         multiple
-        accept=".pdf,.docx,.doc,.txt,.md,.udf,image/*"
+        accept=".pdf,.docx,.doc,.txt,.md,.udf,.tif,.tiff,image/*"
         onChange={handleFileChange}
         className="hidden"
       />

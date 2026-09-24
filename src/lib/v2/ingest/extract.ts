@@ -85,6 +85,37 @@ export async function extractFromFile(
     };
   }
 
+  // TIFF: modeller kabul etmediği için sayfaları PNG'ye çevirip ayrı ayrı oku
+  if (mimeType === "image/tiff" || lower.endsWith(".tif") || lower.endsWith(".tiff")) {
+    try {
+      const sharp = (await import("sharp")).default;
+      const { pages = 1 } = await sharp(buffer, { pages: -1 }).metadata();
+      const texts: string[] = [];
+      for (let page = 0; page < Math.min(pages, 50); page += 1) {
+        const png = await sharp(buffer, { page }).png().toBuffer();
+        const result = await extractImageWithMethod(png, "image/png", method, startTime);
+        if (result.text) texts.push(pages > 1 ? `--- Sayfa ${page + 1} ---\n${result.text}` : result.text);
+      }
+      return {
+        text: texts.join("\n\n"),
+        method: "image",
+        modelUsed: "TIFF → PNG + görsel okuma",
+        usedAI: true,
+        durationMs: Date.now() - startTime,
+        ...(texts.length === 0 ? { error: "TIFF okunamadı", userMessage: "TIFF dosyasından metin çıkarılamadı." } : {}),
+      } as Awaited<ReturnType<typeof extractImageWithMethod>>;
+    } catch (e) {
+      return {
+        text: "",
+        method: "fallback",
+        usedAI: false,
+        durationMs: Date.now() - startTime,
+        error: `TIFF dönüştürülemedi: ${String(e)}`,
+        userMessage: "TIFF dosyası açılamadı. PDF veya JPG olarak yüklemeyi deneyin.",
+      } as Awaited<ReturnType<typeof extractImageWithMethod>>;
+    }
+  }
+
   // Görsel (JPG/PNG)
   if (mimeType.startsWith("image/")) {
     return extractImageWithMethod(buffer, mimeType, method, startTime);
@@ -482,7 +513,7 @@ async function callOpenAIVisionPage(
   return { success: false, text: "", error: "Tüm retry'lar tükendi" };
 }
 
-// ─────────────────────────────────────────────────────────
+// ─────────────────────────────────────��───────────────────
 // GEMINI VISION — PDF → PNG → Gemini Pro Vision
 // ─────────────────────────────────────────────────────────
 

@@ -260,6 +260,8 @@ export async function runOrchestra(
   const round1Outputs: Record<AgentId, string> = {
     ...(ctx.priorOutputs ?? {}),
   } as Record<AgentId, string>;
+  const round2Outputs: Partial<Record<AgentId, string>> = {};
+  let crossCritique = "";
 
   if (startRound > 1) {
     emit({
@@ -402,7 +404,7 @@ export async function runOrchestra(
               id: "opt_priority_critique",
               label: "Sentezde Karşı Argüman'ın tespitlerine öncelik ver",
               reasoning:
-                "Stres-test edilmiş, savunmacı ve sağlamlaştırılmış bir taslak istiyorum.",
+                "Stres-test edilmiş, savunmacı ve sa��lamlaştırılmış bir taslak istiyorum.",
             },
             {
               id: "opt_comprehensive",
@@ -472,14 +474,14 @@ export async function runOrchestra(
       const result = await callAgent(reviewer, { prompt: r2Prompt, ctx, jsonMode: reviewer === "delil_haritalama" });
       const critique = `## ${AGENTS[reviewer].displayName} Red-Team\\n${result.content}`;
       critiques.push(critique);
-      round1Outputs[reviewer] = `${round1Outputs[reviewer] ?? ""}\\n\\n${critique}`;
+      round2Outputs[reviewer] = result.content;
       emit({ type: "agent_done", agentId: reviewer, round: 2, content: result.content, tokensUsed: result.tokensUsed, cost: result.cost, rawResponse: result.rawResponse });
       emit({ type: "agent_message", from: reviewer, to: "orchestrator", round: 2, content: result.content.slice(0, 400) + (result.content.length > 400 ? "…" : ""), messageType: "critique" });
     } catch (e) {
       emit({ type: "agent_error", agentId: reviewer, round: 2, message: String(e) });
     }
   }));
-  const crossCritique = critiques.join("\\n\\n");
+  crossCritique = critiques.join("\\n\\n");
 
   // ── always_ask: TUR 2 (çapraz inceleme) sonunda da onay iste ──
   if (
@@ -564,7 +566,7 @@ export async function runOrchestra(
       "\n\n" +
       sourcePacketPrompt +
       "\n\n" +
-      buildSynthesisPrompt(ctx, round1Outputs, analyzers);
+      buildSynthesisPrompt(ctx, round1Outputs, analyzers, round2Outputs);
     const result = await callAgent("dilekce_editoru", {
       prompt: synthesisPrompt,
       ctx,
@@ -643,7 +645,7 @@ export async function runOrchestra(
         timestamp: new Date().toISOString(),
       };
       emit({ type: "agent_done", agentId: "kalite_kontrol", round: 3, content: result.content, tokensUsed: result.tokensUsed, cost: result.cost, rawResponse: result.rawResponse });
-      emit({ type: "quality_iteration", iteration, score, status: passed ? "passed" : deliveryGate.status === "requires_review" ? "requires_review" : "needs_revision" });
+      emit({ type: "quality_iteration", iteration, score, status: passed ? "passed" : deliveryGate.status === "requires_review" ? "requires_review" : "needs_revision", changes: criticalIssues.map((issue) => issue.description) });
       emit({ type: "petition_draft", version: iteration + 1, markdown: petitionMarkdown, quality: qualityReport });
       emit({ type: "delivery_gate", gate: deliveryGate });
 
@@ -652,12 +654,22 @@ export async function runOrchestra(
 
       emit({ type: "analysis_stage", stage: "revision", message: `İterasyon ${iteration} başarısız: editör taslağı kanıt ve red-team bulgularına göre yeniden yazıyor.` });
       const revision = await callAgent("dilekce_editoru", {
-        prompt: `${buildSynthesisPrompt(ctx, round1Outputs, analyzers)}\n\n## ÖNCEKİ TASLAK\n${petitionMarkdown}\n\n## KALİTE RAPORU\n${JSON.stringify(qualityReport)}\n\n## ZORUNLU REVİZYON\nSadece doğrulanabilir iddiaları koru. Her maddi iddiayı belge/sayfa, kanun veya doğrulanmış içtihatla bağla. Kritik sorunları gider. Belirsiz kalanları açıkça [AVUKAT İNCELEMESİ] işaretiyle belirt.`,
+        prompt: `${buildSynthesisPrompt(ctx, round1Outputs, analyzers, round2Outputs)}\n\n## RED-TEAM ELEŞTİRİLERİ\n${crossCritique}\n\n## ÖNCEKİ TASLAK\n${petitionMarkdown}\n\n## KALİTE RAPORU\n${JSON.stringify(qualityReport)}\n\n## ZORUNLU REVİZYON\nSadece doğrulanabilir iddiaları koru. Her maddi iddiayı belge/sayfa, kanun veya doğrulanmış içtihatla bağla. Kritik sorunları gider. Belirsiz kalanları açıkça [AVUKAT İNCELEMESİ] işaretiyle belirt.`,
         ctx,
         maxTokens: 16000,
       });
       petitionMarkdown = revision.content;
       petitionCost += revision.cost;
+      emit({
+        type: "agent_done",
+        agentId: "dilekce_editoru",
+        round: 3,
+        content: revision.content,
+        tokensUsed: revision.tokensUsed,
+        cost: revision.cost,
+        rawResponse: revision.rawResponse,
+      });
+      emit({ type: "petition_draft", version: iteration + 2, markdown: petitionMarkdown, quality: qualityReport });
     } catch (error) {
       deliveryGate = { status: "requires_review", reason: `Kalite kapısı teknik olarak tamamlanamadı: ${String(error)}`, criticalIssues: [{ type: "legal_error", description: "Kalite doğrulaması başarısız oldu." }], warnings: [], timestamp: new Date().toISOString() };
       emit({ type: "delivery_gate", gate: deliveryGate });
@@ -691,7 +703,8 @@ function buildRound1Prompt(
 function buildSynthesisPrompt(
   ctx: OrchestraContext,
   outputs: Record<AgentId, string>,
-  enabledAnalyzers: AgentId[]
+  enabledAnalyzers: AgentId[],
+  round2Outputs: Partial<Record<AgentId, string>> = {}
 ): string {
   const lengthInstr = PETITION_LENGTH_INSTRUCTIONS[ctx.preferences.petitionLength];
   const qualityInstr =
@@ -706,6 +719,10 @@ function buildSynthesisPrompt(
         `\n\n### ${AGENTS[a].emoji} ${AGENTS[a].displayName}\n${outputs[a]}`
     )
     .join("");
+  const critiqueOutputs = Object.entries(round2Outputs)
+    .filter(([, output]) => output)
+    .map(([agentId, output]) => `\n\n### RED-TEAM: ${AGENTS[agentId as AgentId]?.displayName ?? agentId}\n${output}`)
+    .join("");
 
   // Checkpoint'te kullanıcının verdiği karar/talimat — mutlaka uygula
   const userGuidance = ctx.userGuidance?.trim();
@@ -713,7 +730,7 @@ function buildSynthesisPrompt(
     ? `\n\n## KULLANICI YÖNLENDİRMESİ (orkestra checkpoint'ine verdiği karar)\n${userGuidance}\nBu yönlendirme KESİN talimattır: dilekçe taslağını buna göre şekillendir.\n`
     : "";
 
-  return `# NİHAİ DİLEKÇE SENTEZİ\n\n## Dava\n${ctx.caseTitle}\n${ctx.caseDescription}\n\n## UZUNLUK\n${lengthInstr}\n\n## KALİTE\n${qualityInstr}${guidanceBlock}\n\n## Uzman Ajanların Çıktıları\n${analyzerOutputs}\n\n---\n\nYukarıdaki tüm ajan çıktılarını SENTEZ ederek profesyonel bir Türk hukuku dilekçesi yaz.\n\nKURALLAR:\n1. Format: Mahkeme adı → Esas No → Taraflar → KONU → AÇIKLAMALAR (numaralı paragraflar) → HUKUKÎ DAYANAK → NETİCE-İ TALEP → Tarih + İmza\n2. Her paragrafa <!-- src:AJAN_ID --> yorum ekle\n3. Atıfları tam formatta yaz: "Yargıtay X. HD, E.YYYY/XYZ, K.YYYY/ABC, T.GG.AA.YYYY"\n4. ASLA halüsinasyon — emin değilsen "İçtihat Tarama Ajanı'nın bulduğu kararlar" gibi belirt`;
+  return `# NİHAİ DİLEKÇE SENTEZİ\n\n## Dava\n${ctx.caseTitle}\n${ctx.caseDescription}\n\n## UZUNLUK\n${lengthInstr}\n\n## KALİTE\n${qualityInstr}${guidanceBlock}\n\n## TUR 1 — BAĞIMSIZ İLK GÖRÜŞLER (DEĞİŞTİRİLEMEZ KAYIT)\n${analyzerOutputs}\n\n## TUR 2 — RED-TEAM ELEŞTİRİLERİ\n${critiqueOutputs || "(red-team çıktısı yok)"}\n\n---\n\nYukarıdaki tüm ajan çıktılarını SENTEZ ederek profesyonel bir Türk hukuku dilekçesi yaz.\n\nKURALLAR:\n1. Format: Mahkeme adı → Esas No → Taraflar → KONU → AÇIKLAMALAR (numaralı paragraflar) → HUKUKÎ DAYANAK → NETİCE-İ TALEP → Tarih + İmza\n2. Her paragrafa <!-- src:AJAN_ID --> yorum ekle\n3. Atıfları tam formatta yaz: "Yargıtay X. HD, E.YYYY/XYZ, K.YYYY/ABC, T.GG.AA.YYYY"\n4. ASLA halüsinasyon — emin değilsen "İçtihat Tarama Ajanı'nın bulduğu kararlar" gibi belirt`;
 }
 
 interface CallAgentResult {

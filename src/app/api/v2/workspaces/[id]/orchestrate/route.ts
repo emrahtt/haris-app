@@ -211,6 +211,50 @@ async function persistEvent(
         type: "synthesis",
       });
       break;
+    case "analysis_stage":
+      await saveAgentMessage(workspaceId, userId, {
+        id: uuid(),
+        from: "orchestrator",
+        to: "broadcast",
+        round: 3,
+        timestamp: new Date().toISOString(),
+        content: `[analysis_stage:${event.stage}] ${event.message}`,
+        type: "synthesis",
+      });
+      break;
+    case "quality_iteration":
+      await saveAgentMessage(workspaceId, userId, {
+        id: uuid(),
+        from: "orchestrator",
+        to: "broadcast",
+        round: 3,
+        timestamp: new Date().toISOString(),
+        content: `[quality_iteration:${event.iteration}] score=${event.score} status=${event.status}${event.changes?.length ? ` changes=${event.changes.join(" | ")}` : ""}`,
+        type: "synthesis",
+      });
+      break;
+    case "claim_matrix":
+      await saveAgentMessage(workspaceId, userId, {
+        id: uuid(),
+        from: "orchestrator",
+        to: "broadcast",
+        round: 1,
+        timestamp: new Date().toISOString(),
+        content: `[claim_matrix] claims=${event.claims.length} conflicts=${event.conflicts.length}`,
+        type: "synthesis",
+      });
+      break;
+    case "delivery_gate":
+      await saveAgentMessage(workspaceId, userId, {
+        id: uuid(),
+        from: "orchestrator",
+        to: "broadcast",
+        round: 3,
+        timestamp: new Date().toISOString(),
+        content: `[delivery_gate:${event.gate.status}] ${event.gate.reason}`,
+        type: "synthesis",
+      });
+      break;
     case "petition_draft":
       await savePetitionVersion(workspaceId, userId, {
         versionNumber: event.version,

@@ -1,9 +1,9 @@
 // Kullanım: node --env-file-if-exists=.env.development.local scripts/check-models.mjs
 const roles = {
-  orchestrator: process.env.HARIS_ORCHESTRATOR_MODEL || "anthropic:claude-opus-5-5",
+  orchestrator: process.env.HARIS_ORCHESTRATOR_MODEL || "anthropic:claude-fable-5-1",
   analyzer: process.env.HARIS_ANALYZER_MODEL || "anthropic:claude-opus-5-5",
   opposition: process.env.HARIS_OPPOSITION_MODEL || "openai:gpt-6-astra",
-  drafter: process.env.HARIS_DRAFTER_MODEL || "anthropic:claude-opus-5-5",
+  drafter: process.env.HARIS_DRAFTER_MODEL || "anthropic:claude-fable-5-1",
   quick: process.env.HARIS_QUICK_MODEL || "openai:gpt-5.6-sol",
   vision: process.env.HARIS_VISION_MODEL || "anthropic:claude-opus-5-5",
   fallback: process.env.HARIS_FALLBACK_MODEL,
